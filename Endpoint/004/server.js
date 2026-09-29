@@ -5,7 +5,10 @@ const fs = require('fs');
 const app = express();
 const PORT = Number(process.env.PORT || 80);
 
+app.set('trust proxy', true);
+
 let FLAG;
+
 try {
   FLAG = fs.readFileSync('/flag.txt', 'utf8').trim();
 } catch {
@@ -17,8 +20,7 @@ app.use(express.json());
 
 const OAUTH_CLIENT = {
   client_id: 'northstar-web',
-  client_name: 'Northstar Customer Portal',
-  registered_redirect_uri: `http://localhost:${PORT}/oauth/callback`
+  client_name: 'Northstar Customer Portal'
 };
 
 const accounts = [
@@ -38,6 +40,15 @@ const accounts = [
 
 const authorizationCodes = new Map();
 const sessions = new Map();
+
+function getBaseUrl(req) {
+  const forwardedProto = req.get('x-forwarded-proto');
+  const protocol = forwardedProto
+    ? forwardedProto.split(',')[0].trim()
+    : req.protocol;
+
+  return `${protocol}://${req.get('host')}`;
+}
 
 function esc(value = '') {
   return String(value)
@@ -95,7 +106,8 @@ function createSession(account) {
 
 function accountByEmail(email) {
   return accounts.find(
-    account => account.email.toLowerCase() === String(email).toLowerCase()
+    account =>
+      account.email.toLowerCase() === String(email).toLowerCase()
   ) || null;
 }
 
@@ -106,23 +118,92 @@ function page(title, body) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>
+
 <style>
-body{margin:0;background:#07111f;color:#e6edf5;font-family:Arial,Helvetica,sans-serif}
-main{max-width:900px;margin:50px auto;padding:30px;background:#0d1b2a;border:1px solid #1f3550;border-radius:14px}
-h1{margin-top:0;color:#8be9fd}
-h2{color:#c6e2ff}
-a{color:#7dd3fc}
-input,button{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid #38536f}
-input{background:#08131f;color:#fff;width:100%;box-sizing:border-box}
-button{background:#2c7be5;color:white;border:0;cursor:pointer;margin-top:12px}
-code,pre{background:#06101a;padding:3px 6px;border-radius:5px}
-.box{padding:16px;border:1px solid #29435f;border-radius:10px;margin:15px 0}
-.small{color:#97a9bb;font-size:13px}
-.flag{font-size:24px;color:#8df7b5;word-break:break-word}
+body {
+  margin: 0;
+  background: #07111f;
+  color: #e6edf5;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+main {
+  max-width: 900px;
+  margin: 50px auto;
+  padding: 30px;
+  background: #0d1b2a;
+  border: 1px solid #1f3550;
+  border-radius: 14px;
+}
+
+h1 {
+  margin-top: 0;
+  color: #8be9fd;
+}
+
+h2 {
+  color: #c6e2ff;
+}
+
+a {
+  color: #7dd3fc;
+}
+
+input,
+button {
+  font: inherit;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #38536f;
+}
+
+input {
+  background: #08131f;
+  color: #fff;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+button {
+  background: #2c7be5;
+  color: white;
+  border: 0;
+  cursor: pointer;
+  margin-top: 12px;
+}
+
+code,
+pre {
+  background: #06101a;
+  padding: 3px 6px;
+  border-radius: 5px;
+}
+
+.box {
+  padding: 16px;
+  border: 1px solid #29435f;
+  border-radius: 10px;
+  margin: 15px 0;
+}
+
+.small {
+  color: #97a9bb;
+  font-size: 13px;
+}
+
+.flag {
+  font-size: 24px;
+  color: #8df7b5;
+  word-break: break-word;
+}
 </style>
+
 </head>
+
 <body>
-<main>${body}</main>
+<main>
+${body}
+</main>
 </body>
 </html>`;
 }
@@ -130,22 +211,37 @@ code,pre{background:#06101a;padding:3px 6px;border-radius:5px}
 app.get('/', (req, res) => {
   res.send(page('Northstar Customer Portal', `
     <h1>Northstar Customer Portal</h1>
-    <p>Sign in with the corporate identity provider.</p>
+
+    <p>
+      Sign in with the corporate identity provider.
+    </p>
 
     <div class="box">
       <h2>OAuth Sign-In</h2>
-      <p class="small">Legacy SSO migration is currently enabled.</p>
-      <a href="/login"><button>Continue with Northstar ID</button></a>
+
+      <p class="small">
+        Legacy SSO migration is currently enabled.
+      </p>
+
+      <a href="/login">
+        <button>Continue with Northstar ID</button>
+      </a>
     </div>
 
-    <p class="small">Authorized CyberAnzen security-training environment.</p>
+    <p class="small">
+      Authorized CyberAnzen security-training environment.
+    </p>
   `));
 });
 
 app.get('/login', (req, res) => {
   const state = randomToken(16);
+
+  const defaultRedirectUri =
+    `${getBaseUrl(req)}/oauth/callback`;
+
   const redirectUri =
-    req.query.redirect_uri || OAUTH_CLIENT.registered_redirect_uri;
+    req.query.redirect_uri || defaultRedirectUri;
 
   res.send(page('OAuth Login', `
     <h1>Northstar Identity Provider</h1>
@@ -181,7 +277,11 @@ app.get('/login', (req, res) => {
         value="${esc(state)}"
       >
 
-      <label>Identity email</label>
+      <label>
+        Identity email
+      </label>
+
+      <br><br>
 
       <input
         name="email"
@@ -193,7 +293,10 @@ app.get('/login', (req, res) => {
         Legacy test provider: email ownership is not verified during this flow.
       </p>
 
-      <button type="submit">Authorize</button>
+      <button type="submit">
+        Authorize
+      </button>
+
     </form>
   `));
 });
@@ -213,12 +316,19 @@ app.get('/oauth/authorize', (req, res) => {
     return res.status(400).send('invalid_request');
   }
 
+  if (!redirect_uri) {
+    return res.status(400).send('missing_redirect_uri');
+  }
+
   res.send(page('Authorize Application', `
     <h1>Northstar Identity Provider</h1>
 
-    <p>Authorization request received.</p>
+    <p>
+      Authorization request received.
+    </p>
 
     <div class="box">
+
       <p>
         <strong>Client:</strong>
         ${esc(client_id)}
@@ -228,6 +338,7 @@ app.get('/oauth/authorize', (req, res) => {
         <strong>Redirect:</strong>
         <code>${esc(redirect_uri)}</code>
       </p>
+
     </div>
 
     <form method="POST" action="/oauth/authorize">
@@ -256,7 +367,11 @@ app.get('/oauth/authorize', (req, res) => {
         value="${esc(state || '')}"
       >
 
-      <label>Identity email</label>
+      <label>
+        Identity email
+      </label>
+
+      <br><br>
 
       <input
         name="email"
@@ -264,7 +379,10 @@ app.get('/oauth/authorize', (req, res) => {
         autocomplete="off"
       >
 
-      <button type="submit">Allow Access</button>
+      <button type="submit">
+        Allow Access
+      </button>
+
     </form>
   `));
 });
@@ -300,10 +418,16 @@ app.post('/oauth/authorize', (req, res) => {
     issuedAt: Date.now()
   });
 
-  const target = new URL(
-    redirect_uri,
-    `http://localhost:${PORT}`
-  );
+  let target;
+
+  try {
+    target = new URL(
+      redirect_uri,
+      getBaseUrl(req)
+    );
+  } catch {
+    return res.status(400).send('invalid_redirect_uri');
+  }
 
   target.searchParams.set('code', code);
 
@@ -315,7 +439,9 @@ app.post('/oauth/authorize', (req, res) => {
 });
 
 app.get('/oauth/callback', (req, res) => {
-  const { code } = req.query;
+  const {
+    code
+  } = req.query;
 
   const grant = authorizationCodes.get(code);
 
@@ -323,22 +449,14 @@ app.get('/oauth/callback', (req, res) => {
     return res.status(400).send('invalid_or_expired_code');
   }
 
-  /*
-   * Intentional challenge vulnerabilities:
-   *
-   * 1. OAuth state is not checked against the initiating browser session.
-   * 2. The callback does not verify that the code was returned to the
-   *    originally registered redirect URI.
-   * 3. Account linking trusts the provider email and ignores
-   *    email_verified.
-   */
-
   authorizationCodes.delete(code);
 
   const account = accountByEmail(grant.email);
 
   if (!account) {
-    return res.status(403).send(page('Account Link Failed', `
+    return res.status(403).send(page(
+      'Account Link Failed',
+      `
       <h1>Account linking failed</h1>
 
       <p>
@@ -347,9 +465,12 @@ app.get('/oauth/callback', (req, res) => {
       </p>
 
       <p>
-        <a href="/">Return to portal</a>
+        <a href="/">
+          Return to portal
+        </a>
       </p>
-    `));
+      `
+    ));
   }
 
   const sid = createSession(account);
@@ -367,24 +488,32 @@ app.get('/capture', (req, res) => {
     <h1>OAuth Capture Endpoint</h1>
 
     <p>
-      This endpoint is intentionally exposed in the training environment
-      so players can inspect where the authorization server sends a code.
+      This endpoint is intentionally exposed in the training
+      environment so players can inspect where the authorization
+      server sends a code.
     </p>
 
     <div class="box">
+
       <p>
         <strong>code:</strong>
-        <code>${esc(req.query.code || '(none)')}</code>
+        <code>
+          ${esc(req.query.code || '(none)')}
+        </code>
       </p>
 
       <p>
         <strong>state:</strong>
-        <code>${esc(req.query.state || '(none)')}</code>
+        <code>
+          ${esc(req.query.state || '(none)')}
+        </code>
       </p>
+
     </div>
 
     <p class="small">
-      Use the captured authorization code only against the challenge callback.
+      Use the captured authorization code only against the
+      challenge callback.
     </p>
   `));
 });
@@ -404,40 +533,66 @@ app.get('/dashboard', (req, res) => {
     return res.redirect('/');
   }
 
-  const flagBlock = account.role === 'admin'
-    ? `
-      <div class="box">
-        <h2>Administrator Vault</h2>
-        <p class="flag">${esc(FLAG)}</p>
-      </div>
-    `
-    : `
-      <div class="box">
-        <h2>Standard Account</h2>
-        <p>
-          Welcome, ${esc(account.name)}.
-          No protected training artifact is assigned to this role.
-        </p>
-      </div>
-    `;
+  const flagBlock =
+    account.role === 'admin'
+      ? `
+        <div class="box">
+
+          <h2>
+            Administrator Vault
+          </h2>
+
+          <p class="flag">
+            ${esc(FLAG)}
+          </p>
+
+        </div>
+      `
+      : `
+        <div class="box">
+
+          <h2>
+            Standard Account
+          </h2>
+
+          <p>
+            Welcome,
+            ${esc(account.name)}.
+          </p>
+
+          <p>
+            No protected training artifact is assigned
+            to this role.
+          </p>
+
+        </div>
+      `;
 
   res.send(page('Northstar Dashboard', `
-    <h1>Northstar Dashboard</h1>
+    <h1>
+      Northstar Dashboard
+    </h1>
 
     <p>
       Signed in as
-      <strong>${esc(account.email)}</strong>.
+      <strong>
+        ${esc(account.email)}
+      </strong>.
     </p>
 
     <p>
       Role:
-      <code>${esc(account.role)}</code>
+      <code>
+        ${esc(account.role)}
+      </code>
     </p>
 
     ${flagBlock}
 
     <p>
-      <a href="/api/me">View session details</a>
+      <a href="/api/me">
+        View session details
+      </a>
     </p>
   `));
 });
@@ -469,6 +624,7 @@ app.get('/api/me', (req, res) => {
 
 app.get('/oauth/userinfo', (req, res) => {
   const code = req.query.code;
+
   const grant = authorizationCodes.get(code);
 
   if (!grant) {
@@ -485,20 +641,24 @@ app.get('/oauth/userinfo', (req, res) => {
       .slice(0, 16),
 
     email: grant.email,
+
     email_verified: grant.email_verified,
+
     name: grant.name
   });
 });
 
 app.get('/.well-known/openid-configuration', (req, res) => {
+  const baseUrl = getBaseUrl(req);
+
   res.json({
-    issuer: `http://localhost:${PORT}`,
+    issuer: baseUrl,
 
     authorization_endpoint:
-      `http://localhost:${PORT}/oauth/authorize`,
+      `${baseUrl}/oauth/authorize`,
 
     userinfo_endpoint:
-      `http://localhost:${PORT}/oauth/userinfo`,
+      `${baseUrl}/oauth/userinfo`,
 
     response_types_supported: [
       'code'
@@ -514,8 +674,17 @@ app.get('/.well-known/openid-configuration', (req, res) => {
 });
 
 app.get('/api/client-info', (req, res) => {
+  const baseUrl = getBaseUrl(req);
+
   res.json({
-    client: OAUTH_CLIENT,
+    client: {
+      client_id: OAUTH_CLIENT.client_id,
+
+      client_name: OAUTH_CLIENT.client_name,
+
+      registered_redirect_uri:
+        `${baseUrl}/oauth/callback`
+    },
 
     securityNotes: [
       'Legacy redirect handling is intentionally weak.',
@@ -536,12 +705,22 @@ app.use((req, res) => {
   res.status(404).send(
     page(
       'Not Found',
-      '<h1>404</h1><p>The requested route does not exist.</p>'
+      `
+      <h1>404</h1>
+      <p>
+        The requested route does not exist.
+      </p>
+      `
     )
   );
 });
 
-app.listen(PORT, () => {
-  console.log(`[Challenge] OAuth Trap listening on ${PORT}`);
-  console.log('[Challenge] Dynamic flag loaded from /flag.txt');
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(
+    `[Challenge] OAuth Trap listening on ${PORT}`
+  );
+
+  console.log(
+    '[Challenge] Dynamic flag loaded from /flag.txt'
+  );
 });
