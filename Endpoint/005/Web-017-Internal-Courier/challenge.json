@@ -1,0 +1,18 @@
+{
+  "id": "Web/017",
+  "title": "Internal Courier",
+  "category": "Web / SSRF",
+  "level": "Hard",
+  "difficulty": "Hard",
+  "accessMode": "WEB",
+  "internalPort": 80,
+  "flagVariable": "FLAG",
+  "description": "Northstar Logistics exposes a shipment tracking gateway that retrieves tracking information from external courier services. After a recent infrastructure migration, the gateway was left with access to an internal courier management service. Investigate the application architecture, identify the server-side request weakness, pivot into the internal service, recover the service credential exposed by a diagnostic endpoint, and access the restricted administrative report.",
+  "hints": [
+    "The tracking gateway makes requests from the server rather than from your browser.",
+    "Once you reach an internal service, enumerate its endpoints instead of immediately looking for the flag.",
+    "A diagnostic or configuration endpoint may reveal credentials used by another internal component."
+  ],
+  "flagFormat": "NECROX{...}",
+  "flagFallback": "NECROX{internal_courier_default_flag}"
+}
