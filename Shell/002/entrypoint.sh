@@ -4,49 +4,38 @@ set -eu
 
 echo "[RediShell] Initializing..."
 
-ssh-keygen -A >/dev/null 2>&1 || true
+ssh-keygen -A
 
 USER="${SSH_USER:-${SHELL_USER:-${USER_NAME:-${USERNAME:-${USER:-root}}}}}"
 PASS="${SSH_PASSWORD:-${SHELL_PASSWORD:-${PASSWORD:-${USER_PASSWORD:-cyberanzen123}}}}"
 REDIS_PASS="${REDIS_PASSWORD:-${REDIS_PASSWORD_VALUE:-${DB_PASSWORD:-RedisLab-2026!}}}"
 FLAG_VAL="${CHALLENGE_FLAG:-${FLAG:-${DYNAMIC_FLAG:-CYBERANZEN{REDIS_CVE_2025_49844}}}}"
 
-echo "[RediShell] SSH user: $USER"
+echo "[RediShell] Configuring account for SSH user: $USER..."
 echo "[RediShell] Redis version: 8.2.1"
 echo "[RediShell] CVE: CVE-2025-49844"
 
-if [ -z "$USER" ]; then
-    echo "[RediShell] ERROR: SSH user is empty"
-    exit 1
-fi
-
 if [ "$USER" != "root" ]; then
     if ! id "$USER" >/dev/null 2>&1; then
-        echo "[RediShell] Creating user: $USER"
-
-        adduser \
-            -D \
-            -s /bin/bash \
-            "$USER"
+        echo "[RediShell] User $USER does not exist. Creating user account..."
+        adduser -D -s /bin/bash "$USER" 2>/dev/null || \
+        useradd -m -s /bin/bash "$USER" 2>/dev/null
     fi
 fi
 
 echo "$USER:$PASS" | chpasswd
-
-if [ "$USER" != "root" ]; then
-    echo "[RediShell] Account configured: $USER"
-fi
+echo "root:$PASS" | chpasswd
 
 mkdir -p /run/sshd
-mkdir -p /var/log/redis
-mkdir -p /var/lib/redis
 mkdir -p /opt/app
 mkdir -p /opt/secret
+mkdir -p /var/log/redis
+mkdir -p /data
 mkdir -p "/home/$USER/.cache"
 mkdir -p "/home/$USER/documents"
 
-chown redis:redis /var/log/redis
-chown redis:redis /var/lib/redis
+chown redis:redis /data 2>/dev/null || true
+chown redis:redis /var/log/redis 2>/dev/null || true
 
 cat > /etc/motd <<'MOTD'
 ============================================================
@@ -94,7 +83,7 @@ echo
 echo "============================================================"
 echo " INTERNAL REDIS SECURITY LAB"
 echo "============================================================"
-echo " Redis: 127.0.0.1:6379"
+echo " Redis is listening on 127.0.0.1:6379"
 echo " Review the local application configuration."
 echo "============================================================"
 echo
@@ -211,7 +200,7 @@ protected-mode yes
 daemonize no
 supervised no
 
-dir /var/lib/redis
+dir /data
 
 dbfilename dump.rdb
 
@@ -227,30 +216,18 @@ EOF
 chown redis:redis /etc/redis/redis.conf
 chmod 640 /etc/redis/redis.conf
 
-cat > /etc/ssh/sshd_config <<EOF
-Port 22
-ListenAddress 0.0.0.0
-Protocol 2
+sed -i '/^#*PasswordAuthentication/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*PermitRootLogin/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*KbdInteractiveAuthentication/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*UsePAM/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*AuthenticationMethods/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*PubkeyAuthentication/d' /etc/ssh/sshd_config 2>/dev/null || true
 
-HostKey /etc/ssh/ssh_host_rsa_key
-HostKey /etc/ssh/ssh_host_ecdsa_key
-HostKey /etc/ssh/ssh_host_ed25519_key
-
-PasswordAuthentication yes
-KbdInteractiveAuthentication yes
-ChallengeResponseAuthentication yes
-PubkeyAuthentication yes
-
-PermitRootLogin yes
-
-PrintMotd yes
-UseDNS no
-X11Forwarding no
-AllowTcpForwarding no
-PermitTunnel no
-
-AllowUsers $USER
-EOF
+echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
+echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
+echo "KbdInteractiveAuthentication yes" >> /etc/ssh/sshd_config
+echo "UsePAM no" >> /etc/ssh/sshd_config
+echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
 
 echo "[RediShell] Starting Redis..."
 
@@ -270,7 +247,6 @@ for i in $(seq 1 30); do
         -a "$REDIS_PASS" \
         --no-auth-warning \
         PING >/dev/null 2>&1; then
-
         REDIS_READY=1
         break
     fi
@@ -279,8 +255,7 @@ for i in $(seq 1 30); do
 done
 
 if [ "$REDIS_READY" -ne 1 ]; then
-    echo "[RediShell] ERROR: Redis failed to start"
-    echo
+    echo "[RediShell] Redis failed to start"
     echo "========== Redis startup log =========="
     cat /var/log/redis/startup.log || true
     echo "======================================="
@@ -333,23 +308,9 @@ echo "[RediShell] SSH user: $USER"
 echo "[RediShell] Redis: 127.0.0.1:6379"
 echo "[RediShell] Starting SSH daemon..."
 
-unset SSH_PASSWORD
-unset SHELL_PASSWORD
-unset PASSWORD
-unset USER_PASSWORD
-
-unset SSH_USER
-unset SHELL_USER
-unset USER_NAME
-unset USERNAME
-unset USER
-
-unset REDIS_PASSWORD
-unset REDIS_PASSWORD_VALUE
-unset DB_PASSWORD
-
-unset FLAG
-unset CHALLENGE_FLAG
-unset DYNAMIC_FLAG
+unset SSH_PASSWORD SHELL_PASSWORD PASSWORD USER_PASSWORD
+unset SSH_USER SHELL_USER USER_NAME USERNAME USER
+unset REDIS_PASSWORD REDIS_PASSWORD_VALUE DB_PASSWORD
+unset FLAG CHALLENGE_FLAG DYNAMIC_FLAG
 
 exec /usr/sbin/sshd -D -e

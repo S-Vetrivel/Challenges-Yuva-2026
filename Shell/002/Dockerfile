@@ -12,8 +12,7 @@ RUN apk update && \
                /run/sshd \
                /opt/app \
                /opt/secret \
-               /var/log/redis \
-               /var/lib/redis
+               /var/log/redis
 
 RUN echo "root:ctf" | chpasswd && \
     adduser -D -s /bin/bash ctf && \
