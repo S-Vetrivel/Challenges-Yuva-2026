@@ -9,7 +9,11 @@ RUN apt-get update && \
         gosu \
         ca-certificates && \
     rm -rf /var/lib/apt/lists/* && \
-    mkdir -p /run/sshd /var/log/redis /opt/app /opt/secret
+    mkdir -p /run/sshd \
+               /opt/app \
+               /opt/secret \
+               /var/log/redis \
+               /var/lib/redis
 
 WORKDIR /opt/challenge
 
@@ -17,6 +21,6 @@ COPY entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 22 6379
+EXPOSE 22
 
 ENTRYPOINT ["/entrypoint.sh"]
