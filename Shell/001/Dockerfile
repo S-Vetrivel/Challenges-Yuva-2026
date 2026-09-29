@@ -8,6 +8,8 @@ RUN apk add --no-cache \
     grep \
     findutils
 
+RUN mkdir -p /run/sshd
+
 WORKDIR /opt/challenge
 
 COPY entrypoint.sh /entrypoint.sh
