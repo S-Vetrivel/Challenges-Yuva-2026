@@ -1,0 +1,16 @@
+{
+  "id": "Web/003",
+  "title": "Forgotten Password",
+  "category": "Web / Authentication",
+  "difficulty": "Easy-Medium",
+  "accessMode": "WEB",
+  "internalPort": 3000,
+  "flagVariable": "FLAG",
+  "description": "Northstar's identity service contains a flawed password-reset workflow. Investigate the recovery API, identify the administrator account, reconstruct the predictable reset token, and recover the flag.",
+  "hints": [
+    "The browser is only the frontend. Look at the API calls it makes.",
+    "Password recovery has more than one endpoint. Examine what the identity service tells you about an account.",
+    "The reset timestamp is more useful than it first appears."
+  ],
+  "flagFallback": "CYBERANZEN{forgotten_password_chain}"
+}

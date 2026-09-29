@@ -1,0 +1,14 @@
+{
+  "name": "cyberanzen-web-003-forgotten-password",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CyberAnzen Web/003 - Forgotten Password",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "4.21.2",
+    "cookie-parser": "1.4.7"
+  }
+}
