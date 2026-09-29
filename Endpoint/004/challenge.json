@@ -1,0 +1,16 @@
+{
+  "id": "Web/021",
+  "title": "OAuth Trap",
+  "category": "Web / OAuth Misconfiguration",
+  "difficulty": "Hard",
+  "accessMode": "WEB",
+  "internalPort": 80,
+  "flagVariable": "FLAG",
+  "description": "Northstar's customer portal relies on a legacy OAuth integration. The migration left multiple trust-boundary mistakes in the authorization flow. Reconstruct the OAuth exchange, inspect the client configuration, abuse the loose redirect handling, and recover an administrator session through flawed account linking.",
+  "hints": [
+    "OAuth metadata and the application's client configuration are often more useful than the landing page.",
+    "Pay attention to how redirect URIs are validated. Prefix checks are not the same thing as exact origin validation.",
+    "The identity provider marks the email as unverified. Ask yourself whether the client actually cares about that field."
+  ],
+  "flagFallback": "NECROX{oauth_trap_default_local_flag}"
+}

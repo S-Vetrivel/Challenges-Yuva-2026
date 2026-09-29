@@ -1,0 +1,12 @@
+{
+  "name": "cyberanzen-web-021-oauth-trap",
+  "version": "1.0.0",
+  "description": "CyberAnzen Web/021 - OAuth Trap",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
