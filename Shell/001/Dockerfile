@@ -1,12 +1,6 @@
 FROM alpine:3.20
 
-RUN apk add --no-cache \
-    openssh \
-    bash \
-    shadow \
-    coreutils \
-    grep \
-    findutils
+RUN apk add --no-cache openssh
 
 RUN mkdir -p /run/sshd
 
