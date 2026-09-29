@@ -2,23 +2,20 @@ FROM redis:8.2.1-alpine
 
 USER root
 
-RUN apk update && \
-    apk add --no-cache \
+RUN apk add --no-cache \
         openssh-server \
         bash \
-        shadow \
-        su-exec && \
-    mkdir -p /var/run/sshd \
-               /run/sshd \
-               /opt/app \
-               /opt/secret \
-               /var/log/redis
+        su-exec \
+    && mkdir -p \
+        /run/sshd \
+        /var/run/sshd \
+        /opt/app \
+        /opt/secret \
+        /var/log/redis \
+        /var/lib/redis
 
-RUN echo "root:ctf" | chpasswd && \
-    adduser -D -s /bin/bash ctf && \
-    echo "ctf:ctf" | chpasswd
-
-WORKDIR /root
+RUN adduser -D -s /bin/bash ctf \
+    && echo "ctf:ctf" | chpasswd
 
 COPY entrypoint.sh /entrypoint.sh
 
