@@ -1,63 +1,67 @@
 #!/bin/sh
 
-set -eu
-
+# 1. Generate SSH host keys dynamically if they do not exist
 ssh-keygen -A
 
+# 2. Grab variables injected by k8sWorker.js with the same aliases as the standard shell template
 USER="${SSH_USER:-${SHELL_USER:-${USER_NAME:-${USERNAME:-${USER:-root}}}}}"
-PASS="${SSH_PASSWORD:-${SHELL_PASSWORD:-${PASSWORD:-${USER_PASSWORD:-cyberanzen123}}}}"
+PASS="${SSH_PASSWORD:-${SHELL_PASSWORD:-${PASSWORD:-${USER_PASSWORD:-cyberanzen123}}}}}"
 FLAG_VAL="${CHALLENGE_FLAG:-${FLAG:-${DYNAMIC_FLAG:-NECROX{broken_deployment_chain}}}}"
 
+# Never allow the injected SSH identity to become root
 if [ "$USER" = "root" ]; then
     USER="ctf"
 fi
 
-getent group deployops >/dev/null 2>&1 || addgroup -S deployops
-getent group releaseops >/dev/null 2>&1 || addgroup -S releaseops
+# 3. Create the dynamic player account if needed
+echo "[Entrypoint] Configuring account for SSH user: $USER..."
 
 if ! id "$USER" >/dev/null 2>&1; then
-    adduser -D -s /bin/bash "$USER"
+    adduser -D -s /bin/bash "$USER" 2>/dev/null || \
+    useradd -m -s /bin/bash "$USER" 2>/dev/null
 fi
 
 echo "$USER:$PASS" | chpasswd
+
 addgroup "$USER" deployops 2>/dev/null || true
 
+# Ensure releasebot exists even if image setup was changed
 if ! id releasebot >/dev/null 2>&1; then
     adduser -D -s /bin/bash releasebot
 fi
 
 addgroup releasebot releaseops 2>/dev/null || true
-
-passwd -l root >/dev/null 2>&1 || true
 passwd -l releasebot >/dev/null 2>&1 || true
+passwd -l root >/dev/null 2>&1 || true
 
-rm -f /flag.txt
-rm -f "/home/$USER/flag.txt"
-
-printf '%s\n' "$FLAG_VAL" > /root/flag.txt
-chmod 400 /root/flag.txt
-chown root:root /root/flag.txt
-
-printf '%s\n' 'NECROX{not_the_real_flag}' > /flag.txt
-chmod 444 /flag.txt
-
-mkdir -p "/home/$USER"
-printf '%s\n' 'NECROX{decoy_broken_deployment}' > "/home/$USER/flag.txt"
-chmod 444 "/home/$USER/flag.txt"
-chown "$USER:$USER" "/home/$USER/flag.txt"
-
+# 4. Create challenge filesystem
 mkdir -p \
     /run/deploy \
     /opt/deploy/bin \
     /opt/deploy/config \
-    /opt/deploy/registry \
     /opt/deploy/logs \
+    /opt/deploy/registry \
     /var/lib/deploy/incoming \
     /var/lib/deploy/artifacts \
     /var/lib/deploy/queue \
     /srv/releases/current \
-    /srv/releases/staging
+    /srv/releases/staging \
+    /home/releasebot/.ssh
 
+# 5. The real flag is root-only
+printf '%s\n' "$FLAG_VAL" > /root/flag.txt
+chmod 400 /root/flag.txt
+chown root:root /root/flag.txt
+
+# 6. Decoy flag only
+printf '%s\n' 'NECROX{deployment_diagnostic_decoy}' > /flag.txt
+chmod 444 /flag.txt
+
+printf '%s\n' 'NECROX{deployment_operator_decoy}' > "/home/$USER/flag.txt"
+chmod 444 "/home/$USER/flag.txt"
+chown "$USER:$USER" "/home/$USER/flag.txt"
+
+# 7. Permissions
 chown root:root \
     /opt/deploy \
     /opt/deploy/bin \
@@ -73,15 +77,15 @@ chown root:deployops \
     /var/lib/deploy/incoming \
     /var/lib/deploy/artifacts
 
+chmod 755 /opt/deploy
+chmod 755 /opt/deploy/bin
 chmod 750 /opt/deploy/config
 chmod 770 /opt/deploy/logs
 chmod 770 /var/lib/deploy/incoming
 chmod 770 /var/lib/deploy/artifacts
+chmod 755 /var/lib/deploy/queue
 
-mkdir -p /home/releasebot/.ssh
-chmod 700 /home/releasebot/.ssh
-chown -R releasebot:releasebot /home/releasebot/.ssh
-
+# 8. Generate releasebot SSH key
 if [ ! -f /home/releasebot/.ssh/id_ed25519 ]; then
     ssh-keygen \
         -q \
@@ -93,59 +97,63 @@ fi
 cat /home/releasebot/.ssh/id_ed25519.pub \
     > /home/releasebot/.ssh/authorized_keys
 
-chmod 600 \
-    /home/releasebot/.ssh/id_ed25519 \
-    /home/releasebot/.ssh/authorized_keys
-
-chmod 644 \
-    /home/releasebot/.ssh/id_ed25519.pub
+chmod 700 /home/releasebot/.ssh
+chmod 600 /home/releasebot/.ssh/id_ed25519
+chmod 600 /home/releasebot/.ssh/authorized_keys
+chmod 644 /home/releasebot/.ssh/id_ed25519.pub
 
 chown -R releasebot:releasebot /home/releasebot/.ssh
 
-cat > /opt/deploy/config/runner.env <<'EOF_RUNNER'
+# 9. Runner configuration
+cat > /opt/deploy/config/runner.env <<'EOF'
+RUNNER_NAME=northstar-runner-01
 RUNNER_TOKEN=RUNNER_7f31c9a4e2b8
 REGISTRY_TOKEN=REGISTRY_2c48d0aa8f71e6c4
 REGISTRY=http://127.0.0.1:18080
-RUNNER=northstar-runner-01
-EOF_RUNNER
+BROKER=/run/deploy/broker.sock
+EOF
 
 chown root:deployops /opt/deploy/config/runner.env
 chmod 640 /opt/deploy/config/runner.env
 
-cat > /opt/deploy/config/release.conf <<'EOF_CONF'
+# 10. Deployment configuration
+cat > /opt/deploy/config/release.conf <<'EOF'
 SERVICE=northstar-api
-BROKER=/run/deploy/broker.sock
-REVIEW=/run/deploy/review.sock
+BROKER_SOCKET=/run/deploy/broker.sock
+REVIEW_SOCKET=/run/deploy/review.sock
 QUEUE=/var/lib/deploy/queue
-RELEASE=/srv/releases/current
+RELEASE_ROOT=/srv/releases/current
 WORKER=northstar-release-worker
-EOF_CONF
+EOF
 
 chown root:deployops /opt/deploy/config/release.conf
 chmod 640 /opt/deploy/config/release.conf
 
-cat > /opt/deploy/logs/runner-debug.log <<'EOF_LOG'
+# 11. Logs containing realistic deployment artifacts
+cat > /opt/deploy/logs/runner-debug.log <<'EOF'
 2026-09-28T18:01:14Z runner boot
+2026-09-28T18:01:21Z loading deployment configuration
 2026-09-28T18:02:07Z registry authentication successful
-2026-09-28T18:02:09Z legacy artifact requested
+2026-09-28T18:02:09Z requesting northstar-api:1.9.4-legacy
 2026-09-28T18:02:11Z release credential cache enabled
 2026-09-28T18:02:12Z deployment broker connected
 2026-09-28T18:03:01Z waiting for release approval
-EOF_LOG
+EOF
 
 chown root:deployops /opt/deploy/logs/runner-debug.log
 chmod 640 /opt/deploy/logs/runner-debug.log
 
-cat > /opt/deploy/logs/deployment.log <<'EOF_LOG'
-2026-09-28T18:11:02Z worker started uid=0
+cat > /opt/deploy/logs/deployment.log <<'EOF'
+2026-09-28T18:11:02Z release worker initialized
 2026-09-28T18:11:03Z deployment queue initialized
 2026-09-28T18:11:05Z promotion gate enabled
-2026-09-28T18:11:08Z release worker waiting
-EOF_LOG
+2026-09-28T18:11:08Z worker waiting
+EOF
 
 chown root:deployops /opt/deploy/logs/deployment.log
 chmod 640 /opt/deploy/logs/deployment.log
 
+# 12. Create backend controller
 cat > /opt/deploy/bin/backend.py <<'PY'
 #!/usr/bin/env python3
 
@@ -161,74 +169,68 @@ import time
 import uuid
 from pathlib import Path
 
+BROKER = "/run/deploy/broker.sock"
+REVIEW = "/run/deploy/review.sock"
+
 BASE = Path("/opt/deploy")
-REGISTRY = BASE / "registry"
+CONFIG = BASE / "config"
 LOGS = BASE / "logs"
+REGISTRY = BASE / "registry"
 
 INCOMING = Path("/var/lib/deploy/incoming")
 ARTIFACTS = Path("/var/lib/deploy/artifacts")
 QUEUE = Path("/var/lib/deploy/queue")
 RELEASE = Path("/srv/releases/current")
 
-BROKER_SOCKET = "/run/deploy/broker.sock"
-REVIEW_SOCKET = "/run/deploy/review.sock"
-
 RUNNER_TOKEN = "RUNNER_7f31c9a4e2b8"
 REGISTRY_TOKEN = "REGISTRY_2c48d0aa8f71e6c4"
 
 RELEASEBOT_UID = pwd.getpwnam("releasebot").pw_uid
 
-for path in [
-    REGISTRY,
-    LOGS,
-    INCOMING,
-    ARTIFACTS,
-    QUEUE,
-    RELEASE
-]:
-    path.mkdir(parents=True, exist_ok=True)
-
-
-def log(filename, message):
-    with open(LOGS / filename, "a") as f:
+def log(name, message):
+    with open(LOGS / name, "a") as f:
         f.write(
-            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) +
-            " " +
-            message +
-            "\n"
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            + " "
+            + message
+            + "\n"
         )
 
+def json_response(handler, code, value):
+    raw = json.dumps(value).encode()
 
-class RegistryHandler(http.server.BaseHTTPRequestHandler):
+    handler.send_response(code)
+    handler.send_header(
+        "Content-Type",
+        "application/json"
+    )
+    handler.send_header(
+        "Content-Length",
+        str(len(raw))
+    )
+    handler.end_headers()
+
+    handler.wfile.write(raw)
+
+class Registry(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
-        log("registry.log", fmt % args)
-
-    def send_json(self, code, data):
-        raw = json.dumps(data).encode()
-
-        self.send_response(code)
-        self.send_header(
-            "Content-Type",
-            "application/json"
+        log(
+            "registry.log",
+            fmt % args
         )
-        self.send_header(
-            "Content-Length",
-            str(len(raw))
-        )
-        self.end_headers()
-        self.wfile.write(raw)
 
     def authorized(self):
         return (
-            self.headers.get("Authorization", "") ==
-            "Bearer " + REGISTRY_TOKEN
+            self.headers.get("Authorization", "")
+            == "Bearer " + REGISTRY_TOKEN
         )
 
     def do_GET(self):
 
         if not self.authorized():
-            self.send_json(
+            json_response(
+                self,
                 401,
                 {
                     "error":
@@ -239,101 +241,88 @@ class RegistryHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/v1/catalog":
 
-            self.send_json(
+            json_response(
+                self,
                 200,
                 {
-                    "name": "northstar-internal",
-                    "repositories": [
-                        "northstar-api",
-                        "northstar-worker"
-                    ],
-                    "tags": {
-                        "northstar-api": [
-                            "1.8.1",
-                            "1.9.2",
-                            "1.9.4-legacy"
-                        ],
-                        "northstar-worker": [
-                            "3.2.0"
-                        ]
-                    }
+                    "repository":
+                    "northstar-api",
+                    "tags": [
+                        "1.8.1",
+                        "1.9.2",
+                        "1.9.4-legacy"
+                    ]
                 }
             )
             return
 
-        if self.path.startswith("/v1/blob/"):
+        prefix = "/v1/blob/"
 
-            name = self.path[
-                len("/v1/blob/"):
-            ]
+        if self.path.startswith(prefix):
 
-            if "/" in name:
-                self.send_json(
+            filename = self.path[len(prefix):]
+
+            if "/" in filename:
+                json_response(
+                    self,
                     404,
-                    {"error": "artifact not found"}
+                    {"error": "not found"}
                 )
                 return
 
-            target = REGISTRY / name
+            target = REGISTRY / filename
 
             if not target.is_file():
-                self.send_json(
+                json_response(
+                    self,
                     404,
-                    {"error": "artifact not found"}
+                    {"error": "not found"}
                 )
                 return
 
             data = target.read_bytes()
 
             self.send_response(200)
-
             self.send_header(
                 "Content-Type",
                 "application/octet-stream"
             )
-
             self.send_header(
                 "Content-Length",
                 str(len(data))
             )
-
             self.end_headers()
+
             self.wfile.write(data)
             return
 
-        self.send_json(
+        json_response(
+            self,
             404,
             {"error": "not found"}
         )
 
-    def do_POST(self):
+    def log_message(self, fmt, *args):
+        return
 
-        self.send_json(
-            405,
-            {"error": "method not allowed"}
-        )
-
-
-def registry_thread():
+def start_registry():
 
     server = http.server.ThreadingHTTPServer(
         ("127.0.0.1", 18080),
-        RegistryHandler
+        Registry
     )
 
     log(
         "registry.log",
-        "registry listening on 127.0.0.1:18080"
+        "internal registry listening"
     )
 
     server.serve_forever()
 
-
-def send_line(conn, text):
+def send_line(conn, value):
     conn.sendall(
-        (text + "\n").encode()
+        (value + "\n").encode()
     )
-
 
 def broker_client(conn):
 
@@ -346,33 +335,33 @@ def broker_client(conn):
 
     send_line(
         conn,
-        "Commands: AUTH STATUS SUBMIT HELP"
+        "AUTH <token> | STATUS | SUBMIT <file> | HELP"
     )
 
     while True:
 
-        raw = conn.recv(4096)
+        data = conn.recv(4096)
 
-        if not raw:
+        if not data:
             break
 
-        line = raw.decode(
+        line = data.decode(
             errors="replace"
         ).strip()
 
         if not line:
             continue
 
-        pieces = line.split(
+        parts = line.split(
             " ",
             1
         )
 
-        command = pieces[0].upper()
+        command = parts[0].upper()
 
         argument = (
-            pieces[1].strip()
-            if len(pieces) == 2
+            parts[1].strip()
+            if len(parts) == 2
             else ""
         )
 
@@ -389,7 +378,7 @@ def broker_client(conn):
 
             send_line(
                 conn,
-                "runner=northstar-runner-01 state=healthy queue=promotion-gated"
+                "state=healthy queue=promotion-gated"
             )
 
             continue
@@ -431,7 +420,7 @@ def broker_client(conn):
 
                 send_line(
                     conn,
-                    "ERR only .tar.gz artifacts accepted"
+                    "ERR archive required"
                 )
 
                 continue
@@ -442,27 +431,26 @@ def broker_client(conn):
 
                 send_line(
                     conn,
-                    "ERR artifact not found in incoming"
+                    "ERR artifact not found"
                 )
 
                 continue
 
             job = uuid.uuid4().hex[:12]
 
-            target = (
+            destination = (
                 ARTIFACTS /
                 (job + ".tar.gz")
             )
 
-            target.write_bytes(
+            destination.write_bytes(
                 source.read_bytes()
             )
 
-            (
-                QUEUE /
-                (job + ".pending")
-            ).write_text(
-                target.name
+            (QUEUE / (
+                job + ".pending"
+            )).write_text(
+                destination.name
             )
 
             source.unlink(
@@ -471,7 +459,7 @@ def broker_client(conn):
 
             log(
                 "broker.log",
-                "submitted job=" + job
+                "artifact submitted job=" + job
             )
 
             send_line(
@@ -486,13 +474,10 @@ def broker_client(conn):
             "ERR unknown command"
         )
 
-
-def broker_thread():
+def start_broker():
 
     try:
-        os.unlink(
-            BROKER_SOCKET
-        )
+        os.unlink(BROKER)
     except FileNotFoundError:
         pass
 
@@ -501,31 +486,18 @@ def broker_thread():
         socket.SOCK_STREAM
     )
 
-    server.bind(
-        BROKER_SOCKET
-    )
-
-    os.chmod(
-        BROKER_SOCKET,
-        0o660
-    )
+    server.bind(BROKER)
+    os.chmod(BROKER, 0o660)
 
     import grp
 
     os.chown(
-        BROKER_SOCKET,
+        BROKER,
         0,
-        grp.getgrnam(
-            "deployops"
-        ).gr_gid
+        grp.getgrnam("deployops").gr_gid
     )
 
     server.listen(10)
-
-    log(
-        "broker.log",
-        "broker started"
-    )
 
     while True:
 
@@ -537,8 +509,7 @@ def broker_thread():
             daemon=True
         ).start()
 
-
-def peer_uid(conn):
+def get_peer_uid(conn):
 
     data = conn.getsockopt(
         socket.SOL_SOCKET,
@@ -553,13 +524,10 @@ def peer_uid(conn):
 
     return uid
 
-
-def review_thread():
+def start_review():
 
     try:
-        os.unlink(
-            REVIEW_SOCKET
-        )
+        os.unlink(REVIEW)
     except FileNotFoundError:
         pass
 
@@ -568,31 +536,18 @@ def review_thread():
         socket.SOCK_STREAM
     )
 
-    server.bind(
-        REVIEW_SOCKET
-    )
-
-    os.chmod(
-        REVIEW_SOCKET,
-        0o660
-    )
+    server.bind(REVIEW)
+    os.chmod(REVIEW, 0o660)
 
     import grp
 
     os.chown(
-        REVIEW_SOCKET,
+        REVIEW,
         0,
-        grp.getgrnam(
-            "releaseops"
-        ).gr_gid
+        grp.getgrnam("releaseops").gr_gid
     )
 
     server.listen(10)
-
-    log(
-        "promotion.log",
-        "promotion service started"
-    )
 
     while True:
 
@@ -600,9 +555,7 @@ def review_thread():
 
         try:
 
-            uid = peer_uid(
-                conn
-            )
+            uid = get_peer_uid(conn)
 
             request = conn.recv(
                 4096
@@ -628,7 +581,7 @@ def review_thread():
 
                 send_line(
                     conn,
-                    "ERR usage: PROMOTE <job-id>"
+                    "ERR usage PROMOTE <job>"
                 )
 
                 continue
@@ -649,7 +602,7 @@ def review_thread():
 
                 send_line(
                     conn,
-                    "ERR pending job not found"
+                    "ERR job not found"
                 )
 
                 continue
@@ -669,149 +622,128 @@ def review_thread():
             )
 
         finally:
-
             conn.close()
 
+def release_worker():
 
-def process_release():
+    while True:
 
-    for approved in sorted(
-        QUEUE.glob(
-            "*.approved"
-        )
-    ):
+        for approved in list(
+            QUEUE.glob("*.approved")
+        ):
 
-        try:
+            try:
 
-            job = approved.name.split(
-                "."
-            )[0]
+                job = approved.name.split(".")[0]
 
-            artifact_name = (
-                approved.read_text()
-                .strip()
-            )
+                archive_name = approved.read_text().strip()
 
-            artifact = (
-                ARTIFACTS /
-                artifact_name
-            )
+                archive = (
+                    ARTIFACTS /
+                    archive_name
+                )
 
-            if not artifact.is_file():
+                if not archive.is_file():
+                    approved.unlink(
+                        missing_ok=True
+                    )
+                    continue
+
+                log(
+                    "worker.log",
+                    "deploying job=" + job
+                )
+
+                with tarfile.open(
+                    archive,
+                    "r:gz"
+                ) as tar:
+
+                    # Intentionally vulnerable:
+                    # archive is extracted as root without
+                    # validating the post-install hook.
+                    tar.extractall(
+                        RELEASE
+                    )
+
+                hook = (
+                    RELEASE /
+                    "hooks" /
+                    "post-install.sh"
+                )
+
+                if hook.is_file():
+
+                    os.chmod(
+                        hook,
+                        0o755
+                    )
+
+                    os.system(
+                        str(hook)
+                    )
+
+                log(
+                    "worker.log",
+                    "completed job=" + job
+                )
 
                 approved.unlink(
                     missing_ok=True
                 )
 
-                continue
-
-            log(
-                "worker.log",
-                "processing job=" + job
-            )
-
-            with tarfile.open(
-                artifact,
-                "r:gz"
-            ) as archive:
-
-                archive.extractall(
-                    RELEASE
+                archive.unlink(
+                    missing_ok=True
                 )
 
-            hook = (
-                RELEASE /
-                "hooks" /
-                "post-install.sh"
-            )
+            except Exception as exc:
 
-            if hook.is_file():
-
-                os.chmod(
-                    hook,
-                    0o755
+                log(
+                    "worker.log",
+                    "worker error " + repr(exc)
                 )
 
-                os.system(
-                    str(hook)
+                approved.unlink(
+                    missing_ok=True
                 )
 
-            log(
-                "worker.log",
-                "deployed job=" + job
-            )
-
-            approved.unlink(
-                missing_ok=True
-            )
-
-            artifact.unlink(
-                missing_ok=True
-            )
-
-        except Exception as exc:
-
-            log(
-                "worker.log",
-                "error=" + repr(exc)
-            )
-
-            approved.unlink(
-                missing_ok=True
-            )
-
-
-def worker_thread():
-
-    log(
-        "worker.log",
-        "root release worker started"
-    )
-
-    while True:
-
-        process_release()
-
-        time.sleep(
-            2
-        )
-
+        time.sleep(2)
 
 def main():
 
-    threads = [
+    workers = [
         threading.Thread(
-            target=registry_thread,
+            target=start_registry,
             daemon=True
         ),
         threading.Thread(
-            target=broker_thread,
+            target=start_broker,
             daemon=True
         ),
         threading.Thread(
-            target=review_thread,
+            target=start_review,
             daemon=True
         ),
         threading.Thread(
-            target=worker_thread,
+            target=release_worker,
             daemon=True
         )
     ]
 
-    for thread in threads:
-        thread.start()
+    for worker in workers:
+        worker.start()
 
     while True:
         time.sleep(3600)
 
-
-if __name__ == "__main__":
-    main()
+main()
 PY
 
 chmod 755 /opt/deploy/bin/backend.py
+chown root:root /opt/deploy/bin/backend.py
 
-cat > /usr/local/bin/deployctl <<'EOF_CTL'
+# 13. Helper commands
+cat > /usr/local/bin/deployctl <<'EOF'
 #!/bin/sh
 
 SOCK=/run/deploy/broker.sock
@@ -819,155 +751,131 @@ SOCK=/run/deploy/broker.sock
 case "${1:-}" in
 
     status)
-
         printf 'STATUS\n' |
         socat - UNIX-CONNECT:"$SOCK"
-
         ;;
 
     help)
-
         printf 'HELP\n' |
         socat - UNIX-CONNECT:"$SOCK"
-
-        ;;
-
-    submit)
-
-        TOKEN="$2"
-        FILE="$3"
-
-        printf 'AUTH %s\n' "$TOKEN"
-        printf 'SUBMIT %s\n' "$(basename "$FILE")"
-
         ;;
 
     *)
-
-        echo "usage:"
-        echo "  deployctl status"
-        echo "  deployctl help"
-
+        echo "usage: deployctl status"
+        echo "       deployctl help"
         ;;
 
 esac
-EOF_CTL
+EOF
 
 chmod 755 /usr/local/bin/deployctl
 
-cat > /usr/local/bin/releasectl <<'EOF_RELEASE'
+cat > /usr/local/bin/releasectl <<'EOF'
 #!/bin/sh
 
 SOCK=/run/deploy/review.sock
 
-if [ "$1" != "promote" ]; then
+if [ "${1:-}" != "promote" ]; then
     echo "usage: releasectl promote <job-id>"
     exit 1
 fi
 
 printf 'PROMOTE %s\n' "$2" |
 socat - UNIX-CONNECT:"$SOCK"
-EOF_RELEASE
+EOF
 
 chmod 755 /usr/local/bin/releasectl
 
-cat > /opt/deploy/registry/northstar-api-1.9.4-legacy.txt <<'EOF_ARTIFACT'
-NORTHSTAR LEGACY ARTIFACT
-repository=northstar-api
-tag=1.9.4-legacy
+# 14. Create legacy registry artifact containing the release identity
+python3 - <<'PY'
+import io
+import os
+import tarfile
 
-This artifact was retained for rollback compatibility.
+registry = "/opt/deploy/registry/northstar-api-1.9.4-legacy.tar.gz"
+key = "/home/releasebot/.ssh/id_ed25519"
 
-releasebot deployment identity:
-see embedded deployment metadata.
+with tarfile.open(registry, "w:gz") as tar:
 
-PRIVATE_KEY_LOCATION=/home/releasebot/.ssh/id_ed25519
-EOF_ARTIFACT
+    info = tarfile.TarInfo(
+        "release-manifest.txt"
+    )
+
+    data = (
+        b"northstar-api 1.9.4-legacy\n"
+        b"release identity retained for rollback\n"
+        b"operator=releasebot\n"
+    )
+
+    info.size = len(data)
+    info.mode = 0o644
+
+    tar.addfile(
+        info,
+        io.BytesIO(data)
+    )
+
+    with open(key, "rb") as f:
+        key_data = f.read()
+
+    key_info = tarfile.TarInfo(
+        "backup/.rollback/id_ed25519"
+    )
+
+    key_info.size = len(key_data)
+    key_info.mode = 0o600
+
+    tar.addfile(
+        key_info,
+        io.BytesIO(key_data)
+    )
+PY
 
 chown root:root \
-    /opt/deploy/registry/northstar-api-1.9.4-legacy.txt
+    /opt/deploy/registry/northstar-api-1.9.4-legacy.tar.gz
 
 chmod 644 \
-    /opt/deploy/registry/northstar-api-1.9.4-legacy.txt
+    /opt/deploy/registry/northstar-api-1.9.4-legacy.tar.gz
 
-cat > /opt/deploy/bin/release-info <<'EOF_INFO'
-#!/bin/sh
-
-echo "Northstar Release Manager"
-echo "release identity: releasebot"
-echo "promotion socket: /run/deploy/review.sock"
-echo "release root: /srv/releases/current"
-EOF_INFO
-
-chmod 755 /opt/deploy/bin/release-info
-
+# 15. Start the entire deployment backend as a single low-memory process
 python3 \
     /opt/deploy/bin/backend.py \
-    >/opt/deploy/logs/backend.stdout \
+    >/opt/deploy/logs/backend.log \
     2>&1 &
 
-BACKEND_PID=$!
+sleep 2
 
-sleep 1
-
+# 16. Validate backend startup
 if [ ! -S /run/deploy/broker.sock ]; then
     echo "[Entrypoint] deployment broker failed"
-    cat /opt/deploy/logs/backend.stdout 2>/dev/null || true
+    cat /opt/deploy/logs/backend.log 2>/dev/null || true
     exit 1
 fi
 
 if [ ! -S /run/deploy/review.sock ]; then
     echo "[Entrypoint] promotion service failed"
-    cat /opt/deploy/logs/backend.stdout 2>/dev/null || true
+    cat /opt/deploy/logs/backend.log 2>/dev/null || true
     exit 1
 fi
 
-sed -i '/^#*PasswordAuthentication/d' \
-    /etc/ssh/sshd_config 2>/dev/null || true
+# 17. Ensure SSH configuration matches the dynamic Doom environment
+sed -i '/^#*PasswordAuthentication/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*PermitRootLogin/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*KbdInteractiveAuthentication/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*UsePAM/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*AuthenticationMethods/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*PubkeyAuthentication/d' /etc/ssh/sshd_config 2>/dev/null || true
 
-sed -i '/^#*PermitRootLogin/d' \
-    /etc/ssh/sshd_config 2>/dev/null || true
+echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
+echo "PermitRootLogin no" >> /etc/ssh/sshd_config
+echo "KbdInteractiveAuthentication yes" >> /etc/ssh/sshd_config
+echo "UsePAM no" >> /etc/ssh/sshd_config
+echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
 
-sed -i '/^#*KbdInteractiveAuthentication/d' \
-    /etc/ssh/sshd_config 2>/dev/null || true
+# 18. Unset sensitive deployment variables before handing control to SSH
+unset SSH_PASSWORD SHELL_PASSWORD PASSWORD USER_PASSWORD
+unset SSH_USER SHELL_USER USER_NAME USERNAME USER
+unset FLAG CHALLENGE_FLAG DYNAMIC_FLAG
 
-sed -i '/^#*UsePAM/d' \
-    /etc/ssh/sshd_config 2>/dev/null || true
-
-sed -i '/^#*AuthenticationMethods/d' \
-    /etc/ssh/sshd_config 2>/dev/null || true
-
-sed -i '/^#*PubkeyAuthentication/d' \
-    /etc/ssh/sshd_config 2>/dev/null || true
-
-echo "PasswordAuthentication yes" \
-    >> /etc/ssh/sshd_config
-
-echo "PermitRootLogin no" \
-    >> /etc/ssh/sshd_config
-
-echo "KbdInteractiveAuthentication yes" \
-    >> /etc/ssh/sshd_config
-
-echo "UsePAM no" \
-    >> /etc/ssh/sshd_config
-
-echo "PubkeyAuthentication yes" \
-    >> /etc/ssh/sshd_config
-
-unset SSH_PASSWORD
-unset SHELL_PASSWORD
-unset PASSWORD
-unset USER_PASSWORD
-
-unset SSH_USER
-unset SHELL_USER
-unset USER_NAME
-unset USERNAME
-unset USER
-
-unset FLAG
-unset CHALLENGE_FLAG
-unset DYNAMIC_FLAG
-
+# 19. Start SSH daemon in the foreground exactly like the Doom shell template
 exec /usr/sbin/sshd -D -e
