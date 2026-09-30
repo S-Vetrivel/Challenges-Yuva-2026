@@ -1,4 +1,5 @@
 #!/bin/sh
+set -eu
 
 # 1. Generate SSH host keys dynamically if they do not exist
 ssh-keygen -A
@@ -6,553 +7,588 @@ ssh-keygen -A
 # 2. Grab variables injected by k8sWorker.js
 USER="${SSH_USER:-${SHELL_USER:-${USER_NAME:-${USERNAME:-${USER:-root}}}}}"
 PASS="${SSH_PASSWORD:-${SHELL_PASSWORD:-${PASSWORD:-${USER_PASSWORD:-cyberanzen123}}}}"
-FLAG_VAL="${CHALLENGE_FLAG:-${FLAG:-${DYNAMIC_FLAG:-CYBERANZEN{broken_deployment_chain}}}}"
+FLAG_VAL="${CHALLENGE_FLAG:-${FLAG:-${DYNAMIC_FLAG:-NECROX{broken_deployment_chain}}}}"
 
-# 3. Prepare challenge filesystem
-mkdir -p \
-    /opt/broken-deployment/bin \
-    /opt/broken-deployment/config \
-    /opt/broken-deployment/artifacts \
-    /opt/broken-deployment/logs \
-    /run/deploy \
-    /var/spool/deploy/queue \
-    /var/spool/deploy/processed \
-    /srv/releases/current \
-    /srv/releases/staging
+# Doom shell connections should always be non-root by default.
+if [ "$USER" = "root" ]; then
+    USER="ctf"
+fi
 
-# Root-only flag
+# 3. Base groups and accounts
+if ! getent group deployops >/dev/null 2>&1; then
+    addgroup -S deployops
+fi
+
+if ! getent group releaseops >/dev/null 2>&1; then
+    addgroup -S releaseops
+fi
+
+if ! id "$USER" >/dev/null 2>&1; then
+    echo "[Entrypoint] Creating SSH user: $USER"
+    adduser -D -s /bin/bash "$USER"
+fi
+
+echo "$USER:$PASS" | chpasswd
+addgroup "$USER" deployops 2>/dev/null || true
+
+if ! id releasebot >/dev/null 2>&1; then
+    adduser -D -s /bin/bash releasebot
+fi
+
+if ! id buildbot >/dev/null 2>&1; then
+    adduser -S -H -s /sbin/nologin buildbot
+fi
+
+addgroup releasebot releaseops 2>/dev/null || true
+
+# Keep root and the internal release identity unreachable through password auth.
+passwd -l root >/dev/null 2>&1 || true
+passwd -l releasebot >/dev/null 2>&1 || true
+
+# 4. Never expose the real flag through common shell locations.
+rm -f /flag.txt 2>/dev/null || true
+rm -f "/home/$USER/flag.txt" 2>/dev/null || true
+
 printf '%s\n' "$FLAG_VAL" > /root/flag.txt
 chmod 400 /root/flag.txt
 chown root:root /root/flag.txt
 
-rm -f /flag.txt
-rm -f /home/ctf/flag.txt
+# Deliberate decoys prevent trivial flag-file solves.
+printf '%s\n' 'NECROX{not_the_real_flag}' > /flag.txt
+chmod 444 /flag.txt
 
-# 4. Create dynamic user if non-root and set password
-echo "[Entrypoint] Configuring account for SSH user: $USER..."
+mkdir -p "/home/$USER"
+printf '%s\n' 'NECROX{decoy_broken_deployment}' > "/home/$USER/flag.txt"
+chmod 444 "/home/$USER/flag.txt"
+chown "$USER:$USER" "/home/$USER/flag.txt" 2>/dev/null || true
 
-if [ "$USER" != "root" ]; then
-    if ! id "$USER" >/dev/null 2>&1; then
-        echo "[Entrypoint] User $USER does not exist. Creating user account..."
-        adduser -D -s /bin/bash "$USER" 2>/dev/null || \
-        useradd -m -s /bin/bash "$USER" 2>/dev/null
-    fi
+# 5. Directory layout
+mkdir -p \
+    /run/deploy \
+    /opt/deploy/bin \
+    /opt/deploy/config \
+    /opt/deploy/registry \
+    /opt/deploy/logs \
+    /var/lib/deploy/incoming \
+    /var/lib/deploy/artifacts \
+    /var/lib/deploy/queue \
+    /srv/releases/current \
+    /srv/releases/staging
 
-    addgroup "$USER" deployops 2>/dev/null || true
+chown root:root /opt/deploy /opt/deploy/bin /opt/deploy/config /opt/deploy/registry
+chown root:deployops /opt/deploy/logs /var/lib/deploy/incoming /var/lib/deploy/artifacts
+chown root:root /var/lib/deploy/queue /srv/releases /srv/releases/current /srv/releases/staging
+chown root:deployops /run/deploy
+
+chmod 755 /opt/deploy /opt/deploy/config
+chmod 700 /opt/deploy/bin /opt/deploy/registry
+chmod 770 /opt/deploy/logs /var/lib/deploy/incoming /var/lib/deploy/artifacts
+chmod 750 /var/lib/deploy/queue
+chmod 755 /srv/releases /srv/releases/current
+chmod 770 /srv/releases/staging /run/deploy
+
+# 6. First trust boundary: runner credential readable by deploy operators.
+cat > /opt/deploy/config/runner.env <<'CFG'
+RUNNER_TOKEN=RUNNER_7f31c9a4e2b8
+RUNNER_NAME=northstar-runner-01
+BROKER_SOCKET=/run/deploy/broker.sock
+REGISTRY_URL=http://127.0.0.1:18080
+CFG
+
+chown root:deployops /opt/deploy/config/runner.env
+chmod 640 /opt/deploy/config/runner.env
+
+# 7. Second trust boundary: legacy runner diagnostic logging leaks a registry token.
+cat > /opt/deploy/logs/runner-debug.log <<'EOFLOG'
+2026-09-29T21:33:08Z runner=northstar-runner-01 mode=production
+2026-09-29T21:33:09Z registry_url=http://127.0.0.1:18080
+2026-09-29T21:33:09Z registry_auth=Bearer REGISTRY_2c48d0aa8f71e6c4
+2026-09-29T21:33:10Z warning=legacy-debug-enabled
+2026-09-29T21:33:12Z note=remove debug logging after migration
+EOFLOG
+
+chown root:deployops /opt/deploy/logs/runner-debug.log
+chmod 640 /opt/deploy/logs/runner-debug.log
+
+# 8. Build the releasebot SSH identity.
+mkdir -p /home/releasebot/.ssh
+chmod 700 /home/releasebot/.ssh
+chown -R releasebot:releasebot /home/releasebot/.ssh
+
+if [ ! -f /home/releasebot/.ssh/id_ed25519 ]; then
+    ssh-keygen -q -t ed25519 -N '' -f /home/releasebot/.ssh/id_ed25519
 fi
 
-echo "$USER:$PASS" | chpasswd
+cat /home/releasebot/.ssh/id_ed25519.pub > /home/releasebot/.ssh/authorized_keys
+chmod 600 /home/releasebot/.ssh/authorized_keys /home/releasebot/.ssh/id_ed25519
+chmod 644 /home/releasebot/.ssh/id_ed25519.pub
+chown -R releasebot:releasebot /home/releasebot/.ssh
 
-# Do not give the player the root password
-passwd -l root >/dev/null 2>&1 || true
-
-# 5. Deployment broker
-cat > /opt/broken-deployment/bin/broker.py <<'PY'
+# 9. Local artifact registry.
+cat > /opt/deploy/bin/registry.py <<'PYBLOCK'
 #!/usr/bin/env python3
-
 import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+TOKEN = "REGISTRY_2c48d0aa8f71e6c4"
+ROOT = Path("/opt/deploy/registry")
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "NorthstarRegistry/1.3"
+
+    def log_message(self, fmt, *args):
+        with open("/opt/deploy/logs/registry.log", "a") as f:
+            f.write((fmt % args) + "\n")
+
+    def authorized(self):
+        return self.headers.get("Authorization", "") == "Bearer " + TOKEN
+
+    def send_json(self, status, obj):
+        data = json.dumps(obj).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if not self.authorized():
+            self.send_json(401, {"error": "registry authentication required"})
+            return
+
+        if self.path == "/v1/catalog":
+            self.send_json(200, {
+                "name": "northstar-internal",
+                "repositories": ["northstar-api", "northstar-worker"],
+                "tags": {
+                    "northstar-api": ["1.8.1", "1.9.2", "1.9.4-legacy"],
+                    "northstar-worker": ["3.2.0"]
+                }
+            })
+            return
+
+        prefix = "/v1/blob/"
+        if self.path.startswith(prefix):
+            name = self.path[len(prefix):]
+            target = ROOT / name
+            if "/" in name or not target.is_file():
+                self.send_json(404, {"error": "artifact not found"})
+                return
+
+            data = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
+        self.send_json(404, {"error": "not found"})
+
+HTTPServer(("127.0.0.1", 18080), Handler).serve_forever()
+PYBLOCK
+chmod 700 /opt/deploy/bin/registry.py
+
+# 10. Deployment broker. deployops can submit artifacts but cannot promote them.
+cat > /opt/deploy/bin/deploy-broker.py <<'PYBLOCK'
+#!/usr/bin/env python3
 import os
 import socket
 import threading
-import time
+import uuid
+from pathlib import Path
 
-SOCKET_PATH = "/run/deploy/broker.sock"
-TOKEN_PATH = "/opt/broken-deployment/config/runner.env"
-QUEUE_DIR = "/var/spool/deploy/queue"
-LOG_PATH = "/opt/broken-deployment/logs/broker.log"
+SOCKET = "/run/deploy/broker.sock"
+TOKEN = "RUNNER_7f31c9a4e2b8"
+INCOMING = Path("/var/lib/deploy/incoming")
+ARTIFACTS = Path("/var/lib/deploy/artifacts")
+QUEUE = Path("/var/lib/deploy/queue")
+LOG = Path("/opt/deploy/logs/broker.log")
 
-RUNNER_TOKEN = "RUNNER-7f3d9c2a-88a1-4d12-broken"
+for p in (INCOMING, ARTIFACTS, QUEUE):
+    p.mkdir(parents=True, exist_ok=True)
 
-os.makedirs(os.path.dirname(SOCKET_PATH), exist_ok=True)
-os.makedirs(QUEUE_DIR, exist_ok=True)
-os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-
-with open(TOKEN_PATH, "w") as f:
-    f.write("RUNNER_TOKEN=" + RUNNER_TOKEN + "\n")
-    f.write("BROKER_MODE=production\n")
-    f.write("DIAGNOSTIC_MODE=legacy\n")
-
-os.chown(TOKEN_PATH, 0, 0)
-os.chmod(TOKEN_PATH, 0o640)
+try:
+    os.unlink(SOCKET)
+except FileNotFoundError:
+    pass
 
 def log(message):
-    with open(LOG_PATH, "a") as f:
-        f.write(
-            time.strftime("%Y-%m-%d %H:%M:%S ") +
-            message +
-            "\n"
-        )
+    with LOG.open("a") as f:
+        f.write(message + "\n")
 
-def send(conn, obj):
-    conn.sendall((json.dumps(obj) + "\n").encode())
+def send(conn, message):
+    conn.sendall((message + "\n").encode())
 
 def handle(conn):
+    authenticated = False
+    send(conn, "NORTHSTAR DEPLOYMENT BROKER v3")
+    send(conn, "Commands: AUTH STATUS SUBMIT HELP")
+
     try:
-        raw = conn.recv(8192).decode(errors="ignore").strip()
-
-        if not raw:
-            return
-
-        parts = raw.split(" ", 2)
-        command = parts[0].upper()
-
-        if command == "INFO":
-            send(conn, {
-                "service": "northstar-deployment-broker",
-                "version": "2.7.4",
-                "socket": SOCKET_PATH,
-                "queue": QUEUE_DIR,
-                "worker": "northstar-release-worker",
-                "diagnostic": "enabled"
-            })
-            return
-
-        if command == "DIAG":
-            try:
-                exposed = open(TOKEN_PATH).read().strip()
-            except Exception:
-                exposed = "unavailable"
-
-            send(conn, {
-                "diagnostic": True,
-                "runner_config": exposed,
-                "finding": "internal service credentials exposed through a diagnostic endpoint"
-            })
-            return
-
-        if command == "STATUS":
-            send(conn, {
-                "queue_depth": len(os.listdir(QUEUE_DIR)),
-                "worker_user": "root",
-                "release_root": "/srv/releases/current"
-            })
-            return
-
-        if command == "SUBMIT":
-
-            if len(parts) != 3:
-                send(conn, {
-                    "error": "usage: SUBMIT <token> <artifact>"
-                })
+        while True:
+            raw = conn.recv(4096)
+            if not raw:
                 return
 
-            token = parts[1]
-            artifact = parts[2]
+            line = raw.decode(errors="replace").strip()
+            if not line:
+                continue
 
-            if token != RUNNER_TOKEN:
-                send(conn, {
-                    "error": "invalid runner token"
-                })
-                return
+            bits = line.split(" ", 1)
+            command = bits[0].upper()
+            argument = bits[1].strip() if len(bits) == 2 else ""
 
-            if not os.path.isfile(artifact):
-                send(conn, {
-                    "error": "artifact not found"
-                })
-                return
+            if command == "HELP":
+                send(conn, "AUTH <token> | STATUS | SUBMIT <artifact-name>")
+                continue
 
-            name = os.path.basename(artifact)
+            if command == "AUTH":
+                authenticated = argument == TOKEN
+                send(conn, "AUTH OK" if authenticated else "AUTH FAILED")
+                continue
 
-            if not name.endswith(".tar.gz"):
-                send(conn, {
-                    "error": "only .tar.gz artifacts accepted"
-                })
-                return
+            if command == "STATUS":
+                send(conn, "runner=northstar-runner-01 state=healthy queue=promotion-gated")
+                continue
 
-            target = os.path.join(QUEUE_DIR, name)
+            if command == "SUBMIT":
+                if not authenticated:
+                    send(conn, "ERR authentication required")
+                    continue
 
-            with open(artifact, "rb") as src:
-                with open(target, "wb") as dst:
-                    dst.write(src.read())
+                name = os.path.basename(argument)
+                if not name.endswith(".tar.gz"):
+                    send(conn, "ERR only .tar.gz artifacts accepted")
+                    continue
 
-            os.chmod(target, 0o640)
+                source = INCOMING / name
+                if not source.is_file():
+                    send(conn, "ERR artifact not found in incoming")
+                    continue
 
-            meta = target + ".json"
+                job_id = uuid.uuid4().hex[:12]
+                target = ARTIFACTS / (job_id + ".tar.gz")
+                target.write_bytes(source.read_bytes())
+                (QUEUE / (job_id + ".pending")).write_text(target.name + "\n")
+                source.unlink(missing_ok=True)
 
-            with open(meta, "w") as f:
-                json.dump(
-                    {
-                        "artifact": target,
-                        "submitted_by": "runner",
-                        "approved": True
-                    },
-                    f
-                )
+                log(f"submitted job={job_id} artifact={target.name}")
+                send(conn, f"SUBMITTED {job_id}")
+                continue
 
-            log("accepted artifact " + target)
-
-            send(conn, {
-                "accepted": True,
-                "artifact": target,
-                "approved": True
-            })
-
-            return
-
-        send(conn, {
-            "error": "unknown command"
-        })
-
-    except Exception as exc:
-
-        log("handler error: " + repr(exc))
-
-        try:
-            send(conn, {
-                "error": "internal broker error"
-            })
-        except Exception:
-            pass
-
+            send(conn, "ERR unknown command")
     finally:
         conn.close()
 
-if os.path.exists(SOCKET_PATH):
-    os.unlink(SOCKET_PATH)
-
-server = socket.socket(
-    socket.AF_UNIX,
-    socket.SOCK_STREAM
-)
-
-server.bind(SOCKET_PATH)
-
-os.chmod(
-    SOCKET_PATH,
-    0o660
-)
-
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(SOCKET)
+os.chmod(SOCKET, 0o660)
 try:
     import grp
-
-    os.chown(
-        SOCKET_PATH,
-        0,
-        grp.getgrnam("deployops").gr_gid
-    )
+    os.chown(SOCKET, 0, grp.getgrnam("deployops").gr_gid)
 except Exception:
     pass
 
 server.listen(20)
+log("broker started")
 
-log(
-    "broker listening on " +
-    SOCKET_PATH
-)
+while True:
+    connection, _ = server.accept()
+    threading.Thread(target=handle, args=(connection,), daemon=True).start()
+PYBLOCK
+chmod 700 /opt/deploy/bin/deploy-broker.py
+
+# 11. Privileged promotion daemon. Only releasebot can access this socket.
+cat > /opt/deploy/bin/promotiond.py <<'PYBLOCK'
+#!/usr/bin/env python3
+import os
+import pwd
+import socket
+import struct
+from pathlib import Path
+
+SOCKET = "/run/deploy/review.sock"
+QUEUE = Path("/var/lib/deploy/queue")
+LOG = Path("/opt/deploy/logs/promotion.log")
+RELEASEBOT_UID = pwd.getpwnam("releasebot").pw_uid
+
+try:
+    os.unlink(SOCKET)
+except FileNotFoundError:
+    pass
+
+def log(message):
+    with LOG.open("a") as f:
+        f.write(message + "\n")
+
+def peer_uid(conn):
+    data = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+    _, uid, _ = struct.unpack("3i", data)
+    return uid
+
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(SOCKET)
+os.chmod(SOCKET, 0o660)
+
+try:
+    import grp
+    os.chown(SOCKET, 0, grp.getgrnam("releaseops").gr_gid)
+except Exception:
+    pass
+
+server.listen(10)
 
 while True:
     conn, _ = server.accept()
+    try:
+        uid = peer_uid(conn)
+        request = conn.recv(4096).decode(errors="replace").strip()
 
-    threading.Thread(
-        target=handle,
-        args=(conn,),
-        daemon=True
-    ).start()
-PY
+        if uid != RELEASEBOT_UID:
+            conn.sendall(b"ERR promotion access denied\n")
+            continue
 
-chmod 755 /opt/broken-deployment/bin/broker.py
-chown root:root /opt/broken-deployment/bin/broker.py
+        bits = request.split()
+        if len(bits) != 2 or bits[0].upper() != "PROMOTE":
+            conn.sendall(b"ERR usage: PROMOTE <job-id>\n")
+            continue
 
-# 6. Root release worker
-cat > /opt/broken-deployment/bin/release-worker.py <<'PY'
+        job_id = bits[1]
+        pending = QUEUE / (job_id + ".pending")
+        approved = QUEUE / (job_id + ".approved")
+
+        if not pending.is_file():
+            conn.sendall(b"ERR pending job not found\n")
+            continue
+
+        pending.rename(approved)
+        log(f"promoted job={job_id} uid={uid}")
+        conn.sendall(("PROMOTED " + job_id + "\n").encode())
+    finally:
+        conn.close()
+PYBLOCK
+chmod 700 /opt/deploy/bin/promotiond.py
+
+# 12. Root release worker. The archive trust boundary is deliberately broken.
+cat > /opt/deploy/bin/release-worker.py <<'PYBLOCK'
 #!/usr/bin/env python3
-
-import json
 import os
-import subprocess
 import tarfile
 import time
+from pathlib import Path
 
-QUEUE = "/var/spool/deploy/queue"
-PROCESSED = "/var/spool/deploy/processed"
-CURRENT = "/srv/releases/current"
-LOG = "/opt/broken-deployment/logs/worker.log"
-
-os.makedirs(QUEUE, exist_ok=True)
-os.makedirs(PROCESSED, exist_ok=True)
-os.makedirs(CURRENT, exist_ok=True)
+QUEUE = Path("/var/lib/deploy/queue")
+ARTIFACTS = Path("/var/lib/deploy/artifacts")
+RELEASE = Path("/srv/releases/current")
+LOG = Path("/opt/deploy/logs/worker.log")
 
 def log(message):
-    with open(LOG, "a") as f:
-        f.write(
-            time.strftime("%Y-%m-%d %H:%M:%S ") +
-            message +
-            "\n"
-        )
+    with LOG.open("a") as f:
+        f.write(message + "\n")
 
 def run_hook():
+    hook = RELEASE / "hooks" / "post-install.sh"
+    if hook.is_file():
+        os.chmod(hook, 0o755)
+        os.system(str(hook))
 
-    hook = os.path.join(
-        CURRENT,
-        "hooks",
-        "post-install.sh"
-    )
+def process(job_file):
+    job_id = job_file.name.split(".")[0]
+    artifact_name = job_file.read_text().strip()
+    artifact = ARTIFACTS / artifact_name
 
-    if os.path.isfile(hook) and os.access(hook, os.X_OK):
+    if not artifact.is_file():
+        log(f"job={job_id} missing artifact={artifact_name}")
+        job_file.unlink(missing_ok=True)
+        return
 
-        log(
-            "executing post-install hook"
-        )
+    # Intentional deployment vulnerability:
+    # archive member paths and symlink targets are trusted by the root worker.
+    with tarfile.open(artifact, "r:gz") as archive:
+        archive.extractall(RELEASE)
 
-        subprocess.run(
-            [hook],
-            cwd=CURRENT,
-            check=False
-        )
+    run_hook()
+    log(f"deployed job={job_id}")
+    job_file.unlink(missing_ok=True)
+    artifact.unlink(missing_ok=True)
 
 while True:
+    for approved in sorted(QUEUE.glob("*.approved")):
+        try:
+            process(approved)
+        except Exception as exc:
+            log(f"job={approved.name} failed={exc}")
+            approved.unlink(missing_ok=True)
+    time.sleep(1)
+PYBLOCK
+chmod 700 /opt/deploy/bin/release-worker.py
 
-    try:
-
-        for name in os.listdir(QUEUE):
-
-            if not name.endswith(".tar.gz"):
-                continue
-
-            archive = os.path.join(
-                QUEUE,
-                name
-            )
-
-            meta = archive + ".json"
-
-            if not os.path.isfile(meta):
-                continue
-
-            try:
-
-                with open(meta) as f:
-                    info = json.load(f)
-
-            except Exception:
-                continue
-
-            if not info.get("approved"):
-                continue
-
-            log(
-                "processing " +
-                archive
-            )
-
-            try:
-
-                # Intentionally unsafe extraction for the challenge.
-                with tarfile.open(
-                    archive,
-                    "r:gz"
-                ) as tar:
-
-                    tar.extractall(
-                        CURRENT
-                    )
-
-                run_hook()
-
-            except Exception as exc:
-
-                log(
-                    "release error: " +
-                    repr(exc)
-                )
-
-            processed_archive = os.path.join(
-                PROCESSED,
-                name
-            )
-
-            processed_meta = (
-                processed_archive +
-                ".json"
-            )
-
-            try:
-
-                os.replace(
-                    archive,
-                    processed_archive
-                )
-
-                os.replace(
-                    meta,
-                    processed_meta
-                )
-
-            except Exception:
-                pass
-
-    except Exception as exc:
-
-        log(
-            "worker loop error: " +
-            repr(exc)
-        )
-
-    time.sleep(2)
-PY
-
-chmod 755 /opt/broken-deployment/bin/release-worker.py
-chown root:root /opt/broken-deployment/bin/release-worker.py
-
-# 7. Deployment client
-cat > /opt/broken-deployment/bin/deployctl <<'SH'
+# 13. Player-side control for submission only.
+cat > /usr/local/bin/deployctl <<'SHBLOCK'
 #!/bin/sh
+set -eu
 
-SOCK="/run/deploy/broker.sock"
+SOCK=/run/deploy/broker.sock
+INCOMING=/var/lib/deploy/incoming
 
 case "${1:-}" in
+  status)
+    printf 'STATUS\n' | socat - UNIX-CONNECT:"$SOCK"
+    ;;
+  help)
+    printf 'HELP\n' | socat - UNIX-CONNECT:"$SOCK"
+    ;;
+  submit)
+    [ $# -eq 2 ] || { echo "usage: deployctl submit <artifact.tar.gz>"; exit 1; }
+    [ -f "$2" ] || { echo "artifact not found"; exit 1; }
 
-    info)
-        printf 'INFO\n' |
-        socat - UNIX-CONNECT:"$SOCK"
-        ;;
+    base=$(basename -- "$2")
+    case "$base" in
+      *.tar.gz) ;;
+      *) echo "artifact must end with .tar.gz"; exit 1 ;;
+    esac
 
-    diag)
-        printf 'DIAG\n' |
-        socat - UNIX-CONNECT:"$SOCK"
-        ;;
+    cp -- "$2" "$INCOMING/$base"
 
-    status)
-        printf 'STATUS\n' |
-        socat - UNIX-CONNECT:"$SOCK"
-        ;;
+    . /opt/deploy/config/runner.env
 
-    submit)
-        TOKEN="$2"
-        ARTIFACT="$3"
-
-        printf 'SUBMIT %s %s\n' \
-            "$TOKEN" \
-            "$ARTIFACT" |
-        socat - UNIX-CONNECT:"$SOCK"
-        ;;
-
-    *)
-        echo "usage: deployctl {info|diag|status|submit}"
-        exit 1
-        ;;
-
+    {
+      printf 'AUTH %s\n' "$RUNNER_TOKEN"
+      printf 'SUBMIT %s\n' "$base"
+    } | socat - UNIX-CONNECT:"$SOCK"
+    ;;
+  *)
+    echo "usage: deployctl {status|help|submit}"
+    exit 1
+    ;;
 esac
-SH
+SHBLOCK
+chmod 755 /usr/local/bin/deployctl
 
-chmod 755 /opt/broken-deployment/bin/deployctl
-chown root:root /opt/broken-deployment/bin/deployctl
+# 14. releasebot-only promotion helper.
+cat > /usr/local/bin/releasectl <<'SHBLOCK'
+#!/bin/sh
+set -eu
 
-# 8. Deployment configuration
-cat > /opt/broken-deployment/config/release.conf <<'EOF'
-SERVICE=northstar-api
-RELEASE_ROOT=/srv/releases/current
-ARTIFACT_QUEUE=/var/spool/deploy/queue
-BROKER_SOCKET=/run/deploy/broker.sock
-WORKER=northstar-release-worker
-EOF
+SOCK=/run/deploy/review.sock
 
-# 9. Deployment logs
-cat > /opt/broken-deployment/logs/deployment.log <<'EOF'
-2026-09-28 22:14:11 deployment broker started
-2026-09-28 22:14:15 runner connected
-2026-09-28 22:14:18 diagnostic request accepted
-2026-09-28 22:15:02 release worker waiting for approved artifacts
-EOF
+case "${1:-}" in
+  promote)
+    [ $# -eq 2 ] || { echo "usage: releasectl promote <job-id>"; exit 1; }
+    printf 'PROMOTE %s\n' "$2" | socat - UNIX-CONNECT:"$SOCK"
+    ;;
+  *)
+    echo "usage: releasectl promote <job-id>"
+    exit 1
+    ;;
+esac
+SHBLOCK
+chown root:releaseops /usr/local/bin/releasectl
+chmod 750 /usr/local/bin/releasectl
 
-# 10. Permissions
-chown -R root:root /opt/broken-deployment/bin
+# 15. Seed an intentionally interesting legacy artifact in the registry.
+rm -rf /tmp/legacy-release
+mkdir -p /tmp/legacy-release/metadata /tmp/legacy-release/keys
 
-chown root:deployops \
-    /opt/broken-deployment/config \
-    /opt/broken-deployment/logs \
-    /opt/broken-deployment/artifacts
+printf '%s\n' 'northstar-api legacy build 1.9.4' \
+    > /tmp/legacy-release/metadata/BUILD.txt
 
-chmod 750 \
-    /opt/broken-deployment/config
+printf '%s\n' 'releasebot deployment identity retained for rollback compatibility' \
+    > /tmp/legacy-release/metadata/NOTE.txt
 
-chmod 775 \
-    /opt/broken-deployment/logs \
-    /opt/broken-deployment/artifacts
+cp /home/releasebot/.ssh/id_ed25519 \
+    /tmp/legacy-release/keys/releasebot_id_ed25519
 
-# 11. Start deployment broker
-python3 \
-    /opt/broken-deployment/bin/broker.py \
-    >/opt/broken-deployment/logs/broker.stdout \
+chmod 600 /tmp/legacy-release/keys/releasebot_id_ed25519
+
+tar -czf /opt/deploy/registry/northstar-api_1.9.4-legacy.tar.gz \
+    -C /tmp/legacy-release .
+
+rm -rf /tmp/legacy-release
+
+# 16. Baseline release structure.
+mkdir -p /srv/releases/current/hooks
+
+cat > /srv/releases/current/hooks/post-install.sh <<'SHBLOCK'
+#!/bin/sh
+echo "baseline northstar release" >> /opt/deploy/logs/worker.log
+SHBLOCK
+
+chmod 755 /srv/releases/current/hooks/post-install.sh
+
+# 17. Files that guide enumeration without directly giving the solution.
+cat > /opt/deploy/logs/worker.log <<'EOFLOG'
+2026-09-28T18:11:02Z worker started uid=0
+2026-09-28T18:11:09Z promotion policy=releasebot-only
+2026-09-28T18:11:11Z release hooks enabled
+EOFLOG
+
+cat > /opt/deploy/config/release-policy.txt <<'EOFCONF'
+Northstar deployment policy
+
+1. Artifact submission is handled by the deployment broker.
+2. Promotion is intentionally separated from submission.
+3. Legacy releasebot retains promotion authority during the migration.
+4. Release hooks are executed by the privileged worker after promotion.
+EOFCONF
+
+chmod 640 /opt/deploy/config/release-policy.txt
+chown root:deployops /opt/deploy/config/release-policy.txt
+
+# 18. Start backend services.
+python3 /opt/deploy/bin/registry.py \
+    >/opt/deploy/logs/registry.stdout \
     2>&1 &
+REGISTRY_PID=$!
 
+python3 /opt/deploy/bin/deploy-broker.py \
+    >/opt/deploy/logs/broker.stdout \
+    2>&1 &
 BROKER_PID=$!
 
-# 12. Start privileged release worker
-python3 \
-    /opt/broken-deployment/bin/release-worker.py \
-    >/opt/broken-deployment/logs/worker.stdout \
+python3 /opt/deploy/bin/promotiond.py \
+    >/opt/deploy/logs/promotion.stdout \
     2>&1 &
+PROMOTION_PID=$!
 
+python3 /opt/deploy/bin/release-worker.py \
+    >/opt/deploy/logs/worker.stdout \
+    2>&1 &
 WORKER_PID=$!
 
-printf '%s\n' "$BROKER_PID" \
-    > /run/deploy/broker.pid
+sleep 1
 
-printf '%s\n' "$WORKER_PID" \
-    > /run/deploy/worker.pid
+# 19. Ensure socket ownership after startup.
+if [ -S /run/deploy/broker.sock ]; then
+    chown root:deployops /run/deploy/broker.sock
+    chmod 660 /run/deploy/broker.sock
+fi
 
-# 13. Wait for the deployment socket
-i=0
+if [ -S /run/deploy/review.sock ]; then
+    chown root:releaseops /run/deploy/review.sock
+    chmod 660 /run/deploy/review.sock
+fi
 
-while [ ! -S /run/deploy/broker.sock ] &&
-      [ "$i" -lt 30 ]; do
+# 20. SSH settings matching the working Doom shell template.
+sed -i '/^#*PasswordAuthentication/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*PermitRootLogin/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*KbdInteractiveAuthentication/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*UsePAM/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*AuthenticationMethods/d' /etc/ssh/sshd_config 2>/dev/null || true
+sed -i '/^#*PubkeyAuthentication/d' /etc/ssh/sshd_config 2>/dev/null || true
 
-    sleep 1
+echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
+echo "PermitRootLogin no" >> /etc/ssh/sshd_config
+echo "KbdInteractiveAuthentication yes" >> /etc/ssh/sshd_config
+echo "UsePAM no" >> /etc/ssh/sshd_config
+echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
 
-    i=$((i + 1))
+# 21. Remove deployment secrets from the environment before SSH starts.
+unset SSH_PASSWORD SHELL_PASSWORD PASSWORD USER_PASSWORD
+unset SSH_USER SHELL_USER USER_NAME USERNAME USER
+unset FLAG CHALLENGE_FLAG DYNAMIC_FLAG
 
-done
-
-# 14. Ensure SSH allows password login and root login
-sed -i '/^#*PasswordAuthentication/d' \
-    /etc/ssh/sshd_config 2>/dev/null || true
-
-sed -i '/^#*PermitRootLogin/d' \
-    /etc/ssh/sshd_config 2>/dev/null || true
-
-sed -i '/^#*KbdInteractiveAuthentication/d' \
-    /etc/ssh/sshd_config 2>/dev/null || true
-
-sed -i '/^#*UsePAM/d' \
-    /etc/ssh/sshd_config 2>/dev/null || true
-
-sed -i '/^#*AuthenticationMethods/d' \
-    /etc/ssh/sshd_config 2>/dev/null || true
-
-sed -i '/^#*PubkeyAuthentication/d' \
-    /etc/ssh/sshd_config 2>/dev/null || true
-
-echo "PasswordAuthentication yes" \
-    >> /etc/ssh/sshd_config
-
-echo "PermitRootLogin yes" \
-    >> /etc/ssh/sshd_config
-
-echo "KbdInteractiveAuthentication yes" \
-    >> /etc/ssh/sshd_config
-
-echo "UsePAM no" \
-    >> /etc/ssh/sshd_config
-
-echo "PubkeyAuthentication yes" \
-    >> /etc/ssh/sshd_config
-
-# 15. Unset sensitive environment variables
-unset SSH_PASSWORD
-unset SHELL_PASSWORD
-unset PASSWORD
-unset USER_PASSWORD
-
-unset SSH_USER
-unset SHELL_USER
-unset USER_NAME
-unset USERNAME
-unset USER
-
-unset FLAG
-unset CHALLENGE_FLAG
-unset DYNAMIC_FLAG
-
-# 16. Start SSH daemon in the foreground
+# 22. Keep SSHD in the foreground exactly like the Doom shell template.
 exec /usr/sbin/sshd -D -e
