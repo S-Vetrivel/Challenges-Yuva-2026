@@ -1,19 +1,20 @@
 #!/bin/sh
 
-# 1. Generate SSH host keys dynamically if they do not exist
+set -eu
+
 ssh-keygen -A
 
-# 2. Grab variables injected by k8sWorker.js with the same aliases as the standard shell template
 USER="${SSH_USER:-${SHELL_USER:-${USER_NAME:-${USERNAME:-${USER:-root}}}}}"
-PASS="${SSH_PASSWORD:-${SHELL_PASSWORD:-${PASSWORD:-${USER_PASSWORD:-cyberanzen123}}}}}"
+PASS="${SSH_PASSWORD:-${SHELL_PASSWORD:-${PASSWORD:-${USER_PASSWORD:-cyberanzen123}}}}"
 FLAG_VAL="${CHALLENGE_FLAG:-${FLAG:-${DYNAMIC_FLAG:-NECROX{broken_deployment_chain}}}}"
 
-# Never allow the injected SSH identity to become root
 if [ "$USER" = "root" ]; then
     USER="ctf"
 fi
 
-# 3. Create the dynamic player account if needed
+getent group deployops >/dev/null 2>&1 || addgroup -S deployops
+getent group releaseops >/dev/null 2>&1 || addgroup -S releaseops
+
 echo "[Entrypoint] Configuring account for SSH user: $USER..."
 
 if ! id "$USER" >/dev/null 2>&1; then
@@ -25,7 +26,6 @@ echo "$USER:$PASS" | chpasswd
 
 addgroup "$USER" deployops 2>/dev/null || true
 
-# Ensure releasebot exists even if image setup was changed
 if ! id releasebot >/dev/null 2>&1; then
     adduser -D -s /bin/bash releasebot
 fi
@@ -34,7 +34,6 @@ addgroup releasebot releaseops 2>/dev/null || true
 passwd -l releasebot >/dev/null 2>&1 || true
 passwd -l root >/dev/null 2>&1 || true
 
-# 4. Create challenge filesystem
 mkdir -p \
     /run/deploy \
     /opt/deploy/bin \
@@ -48,12 +47,10 @@ mkdir -p \
     /srv/releases/staging \
     /home/releasebot/.ssh
 
-# 5. The real flag is root-only
 printf '%s\n' "$FLAG_VAL" > /root/flag.txt
 chmod 400 /root/flag.txt
 chown root:root /root/flag.txt
 
-# 6. Decoy flag only
 printf '%s\n' 'NECROX{deployment_diagnostic_decoy}' > /flag.txt
 chmod 444 /flag.txt
 
@@ -61,7 +58,6 @@ printf '%s\n' 'NECROX{deployment_operator_decoy}' > "/home/$USER/flag.txt"
 chmod 444 "/home/$USER/flag.txt"
 chown "$USER:$USER" "/home/$USER/flag.txt"
 
-# 7. Permissions
 chown root:root \
     /opt/deploy \
     /opt/deploy/bin \
@@ -85,7 +81,6 @@ chmod 770 /var/lib/deploy/incoming
 chmod 770 /var/lib/deploy/artifacts
 chmod 755 /var/lib/deploy/queue
 
-# 8. Generate releasebot SSH key
 if [ ! -f /home/releasebot/.ssh/id_ed25519 ]; then
     ssh-keygen \
         -q \
@@ -104,7 +99,6 @@ chmod 644 /home/releasebot/.ssh/id_ed25519.pub
 
 chown -R releasebot:releasebot /home/releasebot/.ssh
 
-# 9. Runner configuration
 cat > /opt/deploy/config/runner.env <<'EOF'
 RUNNER_NAME=northstar-runner-01
 RUNNER_TOKEN=RUNNER_7f31c9a4e2b8
@@ -116,7 +110,6 @@ EOF
 chown root:deployops /opt/deploy/config/runner.env
 chmod 640 /opt/deploy/config/runner.env
 
-# 10. Deployment configuration
 cat > /opt/deploy/config/release.conf <<'EOF'
 SERVICE=northstar-api
 BROKER_SOCKET=/run/deploy/broker.sock
@@ -129,7 +122,6 @@ EOF
 chown root:deployops /opt/deploy/config/release.conf
 chmod 640 /opt/deploy/config/release.conf
 
-# 11. Logs containing realistic deployment artifacts
 cat > /opt/deploy/logs/runner-debug.log <<'EOF'
 2026-09-28T18:01:14Z runner boot
 2026-09-28T18:01:21Z loading deployment configuration
@@ -153,7 +145,6 @@ EOF
 chown root:deployops /opt/deploy/logs/deployment.log
 chmod 640 /opt/deploy/logs/deployment.log
 
-# 12. Create backend controller
 cat > /opt/deploy/bin/backend.py <<'PY'
 #!/usr/bin/env python3
 
@@ -187,6 +178,7 @@ REGISTRY_TOKEN = "REGISTRY_2c48d0aa8f71e6c4"
 
 RELEASEBOT_UID = pwd.getpwnam("releasebot").pw_uid
 
+
 def log(name, message):
     with open(LOGS / name, "a") as f:
         f.write(
@@ -196,29 +188,18 @@ def log(name, message):
             + "\n"
         )
 
+
 def json_response(handler, code, value):
     raw = json.dumps(value).encode()
 
     handler.send_response(code)
-    handler.send_header(
-        "Content-Type",
-        "application/json"
-    )
-    handler.send_header(
-        "Content-Length",
-        str(len(raw))
-    )
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(raw)))
     handler.end_headers()
-
     handler.wfile.write(raw)
 
-class Registry(http.server.BaseHTTPRequestHandler):
 
-    def log_message(self, fmt, *args):
-        log(
-            "registry.log",
-            fmt % args
-        )
+class Registry(http.server.BaseHTTPRequestHandler):
 
     def authorized(self):
         return (
@@ -233,20 +214,17 @@ class Registry(http.server.BaseHTTPRequestHandler):
                 self,
                 401,
                 {
-                    "error":
-                    "registry authentication required"
+                    "error": "registry authentication required"
                 }
             )
             return
 
         if self.path == "/v1/catalog":
-
             json_response(
                 self,
                 200,
                 {
-                    "repository":
-                    "northstar-api",
+                    "repository": "northstar-api",
                     "tags": [
                         "1.8.1",
                         "1.9.2",
@@ -292,7 +270,6 @@ class Registry(http.server.BaseHTTPRequestHandler):
                 str(len(data))
             )
             self.end_headers()
-
             self.wfile.write(data)
             return
 
@@ -303,10 +280,10 @@ class Registry(http.server.BaseHTTPRequestHandler):
         )
 
     def log_message(self, fmt, *args):
-        return
+        log("registry.log", fmt % args)
+
 
 def start_registry():
-
     server = http.server.ThreadingHTTPServer(
         ("127.0.0.1", 18080),
         Registry
@@ -319,10 +296,10 @@ def start_registry():
 
     server.serve_forever()
 
+
 def send_line(conn, value):
-    conn.sendall(
-        (value + "\n").encode()
-    )
+    conn.sendall((value + "\n").encode())
+
 
 def broker_client(conn):
 
@@ -352,10 +329,7 @@ def broker_client(conn):
         if not line:
             continue
 
-        parts = line.split(
-            " ",
-            1
-        )
+        parts = line.split(" ", 1)
 
         command = parts[0].upper()
 
@@ -366,21 +340,17 @@ def broker_client(conn):
         )
 
         if command == "HELP":
-
             send_line(
                 conn,
                 "AUTH <token> | STATUS | SUBMIT <artifact>"
             )
-
             continue
 
         if command == "STATUS":
-
             send_line(
                 conn,
                 "state=healthy queue=promotion-gated"
             )
-
             continue
 
         if command == "AUTH":
@@ -402,38 +372,28 @@ def broker_client(conn):
         if command == "SUBMIT":
 
             if not authenticated:
-
                 send_line(
                     conn,
                     "ERR authentication required"
                 )
-
                 continue
 
-            name = os.path.basename(
-                argument
-            )
+            name = os.path.basename(argument)
 
-            if not name.endswith(
-                ".tar.gz"
-            ):
-
+            if not name.endswith(".tar.gz"):
                 send_line(
                     conn,
                     "ERR archive required"
                 )
-
                 continue
 
             source = INCOMING / name
 
             if not source.is_file():
-
                 send_line(
                     conn,
                     "ERR artifact not found"
                 )
-
                 continue
 
             job = uuid.uuid4().hex[:12]
@@ -447,9 +407,10 @@ def broker_client(conn):
                 source.read_bytes()
             )
 
-            (QUEUE / (
-                job + ".pending"
-            )).write_text(
+            (
+                QUEUE /
+                (job + ".pending")
+            ).write_text(
                 destination.name
             )
 
@@ -473,6 +434,7 @@ def broker_client(conn):
             conn,
             "ERR unknown command"
         )
+
 
 def start_broker():
 
@@ -509,6 +471,7 @@ def start_broker():
             daemon=True
         ).start()
 
+
 def get_peer_uid(conn):
 
     data = conn.getsockopt(
@@ -523,6 +486,7 @@ def get_peer_uid(conn):
     )
 
     return uid
+
 
 def start_review():
 
@@ -564,12 +528,10 @@ def start_review():
             ).strip()
 
             if uid != RELEASEBOT_UID:
-
                 send_line(
                     conn,
                     "ERR promotion access denied"
                 )
-
                 continue
 
             parts = request.split()
@@ -578,12 +540,10 @@ def start_review():
                 len(parts) != 2 or
                 parts[0].upper() != "PROMOTE"
             ):
-
                 send_line(
                     conn,
                     "ERR usage PROMOTE <job>"
                 )
-
                 continue
 
             job = parts[1]
@@ -599,12 +559,10 @@ def start_review():
             )
 
             if not pending.is_file():
-
                 send_line(
                     conn,
                     "ERR job not found"
                 )
-
                 continue
 
             pending.rename(
@@ -623,6 +581,7 @@ def start_review():
 
         finally:
             conn.close()
+
 
 def release_worker():
 
@@ -659,9 +618,6 @@ def release_worker():
                     "r:gz"
                 ) as tar:
 
-                    # Intentionally vulnerable:
-                    # archive is extracted as root without
-                    # validating the post-install hook.
                     tar.extractall(
                         RELEASE
                     )
@@ -709,6 +665,7 @@ def release_worker():
 
         time.sleep(2)
 
+
 def main():
 
     workers = [
@@ -736,13 +693,13 @@ def main():
     while True:
         time.sleep(3600)
 
+
 main()
 PY
 
 chmod 755 /opt/deploy/bin/backend.py
 chown root:root /opt/deploy/bin/backend.py
 
-# 13. Helper commands
 cat > /usr/local/bin/deployctl <<'EOF'
 #!/bin/sh
 
@@ -786,10 +743,8 @@ EOF
 
 chmod 755 /usr/local/bin/releasectl
 
-# 14. Create legacy registry artifact containing the release identity
 python3 - <<'PY'
 import io
-import os
 import tarfile
 
 registry = "/opt/deploy/registry/northstar-api-1.9.4-legacy.tar.gz"
@@ -837,7 +792,6 @@ chown root:root \
 chmod 644 \
     /opt/deploy/registry/northstar-api-1.9.4-legacy.tar.gz
 
-# 15. Start the entire deployment backend as a single low-memory process
 python3 \
     /opt/deploy/bin/backend.py \
     >/opt/deploy/logs/backend.log \
@@ -845,7 +799,6 @@ python3 \
 
 sleep 2
 
-# 16. Validate backend startup
 if [ ! -S /run/deploy/broker.sock ]; then
     echo "[Entrypoint] deployment broker failed"
     cat /opt/deploy/logs/backend.log 2>/dev/null || true
@@ -858,7 +811,6 @@ if [ ! -S /run/deploy/review.sock ]; then
     exit 1
 fi
 
-# 17. Ensure SSH configuration matches the dynamic Doom environment
 sed -i '/^#*PasswordAuthentication/d' /etc/ssh/sshd_config 2>/dev/null || true
 sed -i '/^#*PermitRootLogin/d' /etc/ssh/sshd_config 2>/dev/null || true
 sed -i '/^#*KbdInteractiveAuthentication/d' /etc/ssh/sshd_config 2>/dev/null || true
@@ -869,13 +821,10 @@ sed -i '/^#*PubkeyAuthentication/d' /etc/ssh/sshd_config 2>/dev/null || true
 echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
 echo "PermitRootLogin no" >> /etc/ssh/sshd_config
 echo "KbdInteractiveAuthentication yes" >> /etc/ssh/sshd_config
-echo "UsePAM no" >> /etc/ssh/sshd_config
 echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
 
-# 18. Unset sensitive deployment variables before handing control to SSH
 unset SSH_PASSWORD SHELL_PASSWORD PASSWORD USER_PASSWORD
 unset SSH_USER SHELL_USER USER_NAME USERNAME USER
 unset FLAG CHALLENGE_FLAG DYNAMIC_FLAG
 
-# 19. Start SSH daemon in the foreground exactly like the Doom shell template
 exec /usr/sbin/sshd -D -e
